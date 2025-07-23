@@ -6,7 +6,7 @@ long_description = (this_directory / 'README.md').read_text()
 
 setup(
     name='pybibx',
-    version='5.1.4',
+    version='5.1.5',
     license='GNU',
     author='Valdecy Pereira',
     author_email='valdecy.pereira@gmail.com',
@@ -19,12 +19,14 @@ setup(
         'chardet',
         'google-generativeai',
         'gensim',
+        'keybert',
         'llmx',
         'matplotlib',
         'networkx',
         'numba',
         'numpy',
         'pandas',
+        'Pillow',
         'plotly',
         'scipy',
         'scikit-learn',

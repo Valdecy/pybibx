@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/Valdecy/Datasets/raw/master/Data%20Science/logo.png" alt="Logo" width="200" height="100"/>
+  <img src="https://github.com/Valdecy/Datasets/raw/master/Data%20Science/logo.png" alt="Logo" width="300" height="400"/>
 </p>
 
 ## Citation

@@ -19,7 +19,23 @@ import networkx as nx
 import numpy as np   
 import openai       
 import os       
-import pandas as pd                
+import pandas as pd     
+import PIL 
+
+try:
+    pil_version = tuple(map(int, PIL.__version__.split('.')[:3]))
+    if pil_version >= (10, 0, 0):
+        import PIL.ImageDraw
+        if not hasattr(PIL.ImageDraw.ImageDraw, 'textsize'):
+            def textsize(self, text, font = None, *args, **kwargs):
+                bbox   = self.textbbox((0, 0), text, font = font, *args, **kwargs)
+                width  = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+                return (width, height)
+            PIL.ImageDraw.ImageDraw.textsize = textsize
+except Exception:
+    pass  
+      
 import plotly.graph_objects as go
 import plotly.subplots as ps      
 import plotly.io as pio         
@@ -101,7 +117,7 @@ def build_edges_ref(ref_idx_list):
             col_indices[pos] = col
             pos              = pos + 1
     return row_indices, col_indices
-
+            
 # pbx Class
 class pbx_probe():
     def __init__(self, file_bib, db = 'scopus', del_duplicated = True):
@@ -1438,7 +1454,8 @@ class pbx_probe():
             data['affiliation_'] = data['affiliation_'].str.replace(r'(?<=[A-Z])\.', '#' , regex = True)
             data['affiliation_'] = data['affiliation_'].str.replace(';', ',', regex = False).str.replace('.', ';', regex = False).str.rstrip(';')
             data['affiliation_'] = data['affiliation_'].str.replace('#', '.', regex = False)
-        data = data.reindex(sorted(data.columns), axis = 1)
+        data['abstract'] = data['abstract'].str.replace('[No abstract available]', 'UNKNOWN', regex = False)
+        data             = data.reindex(sorted(data.columns), axis = 1)
         return data, entries
     
     # Function: Update Verbose
@@ -1459,8 +1476,19 @@ class pbx_probe():
     
     # Function: Get Entries
     def __get_str(self, entry = 'references', s = ';', lower = True, sorting = True):
+        #----------------------------------------------------------------------
+               
+        def is_year_parentheses(ref):
+            cleaned = re.sub(r'^[\s,;:.()\[\]{}]+|[\s,;:.()\[\]{}]+$', '', ref)
+            return bool(re.fullmatch(r'\d{4}', cleaned))
+        
+        #----------------------------------------------------------------------
+        
         column      = self.data[entry]
-        info        = [ [ ' '.join(item.split()).lower() if lower else ' '.join(item.split()) for item in e.split(s) if item.strip() and item.strip() != 'note' ] if isinstance(e, str) else [] for e in column ]
+        if entry != 'references':
+            info = [ [ ' '.join(item.split()).lower() if lower else ' '.join(item.split()) for item in e.split(s) if item.strip() and item.strip() != 'note' ] if isinstance(e, str) else [] for e in column ]
+        else:
+            info = [ [ (' '.join(item.split()).lower() if lower else ' '.join(item.split())) for item in e.split(s) if item.strip() and item.strip() != 'note' and not is_year_parentheses(item) ] if isinstance(e, str) else [] for e in column ]
         unique_info = list({item for sublist in info for item in sublist})
         if ('' in unique_info):
             unique_info.remove('')
@@ -1788,39 +1816,41 @@ class pbx_probe():
     ##############################################################################
     
     # Function: Wordcloud 
-    def word_cloud_plot(self, entry = 'kwp', size_x = 10, size_y = 10, wordsn = 500, rmv_custom_words = []):
-        if  (entry == 'kwp'):
+    def word_cloud_plot(self, entry = 'kwp', size_x = 10, size_y = 10, wordsn = 500, rmv_custom_words = []):   
+        if entry == 'kwp':
             kid_    = [item for sublist in self.kid  for item in sublist]
             corpora = ' '.join(kid_)
             corpora = corpora.lower()
-        elif (entry == 'kwa'):
+        elif entry == 'kwa':
             auk_    = [item for sublist in self.kid  for item in sublist]
             corpora = ' '.join(auk_)
             corpora = corpora.lower()
-        elif (entry == 'abs'):
+        elif entry == 'abs':
             abs_    = self.data['abstract']
             abs_    = list(abs_)
             abs_    = [x for x in abs_ if str(x) != 'nan']
             corpora = ' '.join(abs_)
             corpora = corpora.lower()
-        elif (entry == 'title'):
+        elif entry == 'title':
             tit_    = self.data['title']
             tit_    = list(tit_)
             tit_    = [x for x in tit_ if str(x) != 'nan']
             corpora = ' '.join(tit_)
             corpora = corpora.lower()
-        if (len(rmv_custom_words) > 0):
+        if len(rmv_custom_words) > 0:
             text    = corpora.split()
             text    = [x.replace(' ', '') for x in text if x.replace(' ', '') not in rmv_custom_words]
-            corpora = ' '.join(text) 
-        wordcloud = WordCloud(background_color = 'white', 
-                              max_words        = wordsn, 
-                              contour_width    = 25, 
-                              contour_color    = 'steelblue', 
-                              collocations     = False, 
-                              width            = 1600, 
-                              height           = 800
-                              )
+            corpora = ' '.join(text)
+
+        wordcloud = WordCloud(
+                                background_color = 'white',
+                                max_words        = wordsn,
+                                contour_width    = 25,
+                                contour_color    = 'steelblue',
+                                collocations     = False,
+                                width            = 1600,
+                                height           = 800
+                             )
         wordcloud.generate(corpora)
         self.ask_gpt_wd = wordcloud.words_
         plt.figure(figsize = (size_x, size_y), facecolor = 'k')
@@ -1829,7 +1859,7 @@ class pbx_probe():
         plt.tight_layout(pad = 0)
         plt.show()
         return
-    
+
     # Function: Get Top N-Grams 
     def get_top_ngrams(self, view = 'browser', entry = 'kwp', ngrams = 1, stop_words = [], rmv_custom_words = [], wordsn = 15):
         sw_full = []
@@ -2008,7 +2038,7 @@ class pbx_probe():
         dicty        = dict(zip(years, list(range(0, len(years)))))
         idx          = sorted(range(0, len(self.doc_aut)), key = self.doc_aut.__getitem__)
         idx.reverse()
-        key          = [self.u_aut[i] for i in idx]
+        key          = [self.u_aut[i] for i in idx if self.u_aut[i].strip().lower() != 'unknown']
         key          = key[:topn]
         n_id         = [[ [] for item in years] for item in key]
         productivity = pd.DataFrame(np.zeros((topn, len(years))), index = key, columns = years)
@@ -2210,7 +2240,7 @@ class pbx_probe():
         dicty        = dict(zip(years, list(range(0, len(years)))))
         idx          = sorted(range(0, len(self.uni_count)), key = self.uni_count.__getitem__)
         idx.reverse()
-        key          = [self.u_uni[i] for i in idx]
+        key          = [self.u_uni[i] for i in idx if self.u_uni[i].strip().lower() != 'unknown']
         key          = key[:topn]
         n_id         = [[ [] for item in years] for item in key]
         productivity = pd.DataFrame(np.zeros((topn, len(years))), index = key, columns = years)
@@ -2310,7 +2340,7 @@ class pbx_probe():
         dicty        = dict(zip(years, list(range(0, len(years)))))
         idx          = sorted(range(0, len(self.jou_count)), key = self.jou_count.__getitem__)
         idx.reverse()
-        key          = [self.u_jou[i] for i in idx]
+        key          = [self.u_jou[i] for i in idx if self.u_jou[i].strip().lower() != 'unknown']
         key          = key[:topn]
         n_id         = [[ [] for item in years] for item in key]
         productivity = pd.DataFrame(np.zeros((topn, len(years))), index = key, columns = years)
@@ -2867,23 +2897,24 @@ class pbx_probe():
                                  'kwa' : self.auk,
                                  'kwp' : self.kid,
                                  'lan' : self.lan})
-        sk_data           = sk_data[[x, y]]        
-        relationships     = self.enumerate_relationships(sk_data, [x, y], rmv_unknowns)
-        x_y_pairs         = relationships[0]
-        y_counts          = Counter(x_y_pairs)
-        y_df              = pd.DataFrame(y_counts.items(), columns = ['Pair', 'Count'])
-        y_df[['X', 'Y']]  = pd.DataFrame(y_df['Pair'].tolist(), index = y_df.index)
-        y_df.drop(columns = ['Pair'], inplace = True)
-        x_counts          = y_df.groupby('X')['Count'].sum().reset_index()
-        top_x             = x_counts.nlargest(topn_x, 'Count')['X'].tolist()
-        filtered_df       = y_df[y_df['X'].isin(top_x)]
-        filtered_df       = filtered_df.sort_values(['X', 'Count'], ascending = [True, False])
-        top_y_df          = filtered_df.groupby('X').head(topn_y)
-        self.top_y_x      = top_y_df
-        u_keys            = ['aut', 'cout', 'inst', 'jou', 'kwa', 'kwp', 'lan']
-        u_name            = ['Authors', 'Countries', 'Institutions', 'Journals', 'Auhors_Keywords', 'Keywords_Plus', 'Languages']
-        dict_n            = dict( zip( u_keys, u_name ) )
-        fig               = go.Figure()
+        sk_data              = sk_data[[x, y]]        
+        relationships        = self.enumerate_relationships(sk_data, [x, y], rmv_unknowns)
+        x_y_pairs            = relationships[0]
+        y_counts             = Counter(x_y_pairs)
+        y_df                 = pd.DataFrame(y_counts.items(), columns = ['Pair', 'Count'])
+        y_df[['X', 'Y']]     = pd.DataFrame(y_df['Pair'].tolist(), index = y_df.index)
+        y_df.drop(columns    = ['Pair'], inplace = True)
+        x_counts             = y_df.groupby('X')['Count'].sum().reset_index()
+        top_x                = x_counts.nlargest(topn_x, 'Count')['X'].tolist()
+        filtered_df          = y_df[y_df['X'].isin(top_x)]
+        filtered_df          = filtered_df.sort_values(['X', 'Count'], ascending = [True, False])
+        top_y_df             = filtered_df.groupby('X').head(topn_y)
+        self.top_y_x         = top_y_df.copy()
+        u_keys               = ['aut', 'cout', 'inst', 'jou', 'kwa', 'kwp', 'lan']
+        u_name               = ['Authors', 'Countries', 'Institutions', 'Journals', 'Auhors_Keywords', 'Keywords_Plus', 'Languages']
+        dict_n               = dict( zip( u_keys, u_name ) )
+        self.top_y_x.columns = ['Count', 'X ('+str(dict_n[x])+')', 'Y ('+str(dict_n[y])+')']
+        fig                  = go.Figure()
         for _, row in top_y_df.iterrows():
             y_text = f"{row['Y']} ({row['Count']})" 
             fig.add_trace(go.Bar(
@@ -5143,7 +5174,7 @@ class pbx_probe():
         return
     
     # Function: Citation History Network
-    def network_hist(self, view = 'browser', min_links = 0, chain = [], path = True, node_size = 20, font_size = 10, node_labels = True, dist = 1.2):
+    def network_hist(self, view = 'browser', min_links = 0, chain = [], path = True, node_size = 20, font_size = 10, node_labels = True, dist = 1.2, dist_pad = 0):
         
         #----------------------------------------------------------------------
                      
@@ -5358,6 +5389,12 @@ class pbx_probe():
                             yaxis        = dict(showgrid = False, zeroline = False, showticklabels = False, title = '')
                         )
         fig.update_traces(textfont_size = font_size, textfont_color = 'yellow')
+    
+        ymin = min(articles['y_pos'])
+        ymax = max(articles['y_pos'])
+        pad = dist_pad * 2 if ymax != ymin else dist_pad
+        fig.update_yaxes(range = [ymin - pad, ymax + pad])
+    
         fig.show()
         self.ask_gpt_hist                        = pd.DataFrame(citations, columns = ['Paper ID', 'Reference ID'])
         self.ask_gpt_hist['Paper ID']            = self.ask_gpt_hist['Paper ID'].astype(str)
@@ -5995,7 +6032,7 @@ class pbx_probe():
 
 ############################################################################
 
-    # Function: Ask chatGPT about Authors Productivity by Year
+    # Function: Ask chatGPT about Productivity by Year
     def ask_chatgpt_ap(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, related to authors productivity by year', model = 'text-davinci-003', max_tokens = 2000, n = 1, temperature = 0.8, entry = 'aut'):
         flag                     = 0
         os.environ['OPENAI_KEY'] = api_key
@@ -6246,10 +6283,32 @@ class pbx_probe():
         analyze = self.query_chatgpt(prompt, model, max_tokens, n, temperature, flag, api_key)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
- 
+
+    # Function: Ask chatGPT about Heatmap
+    def ask_chatgpt_heat(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, the cell represents the article IDs where the row and column appear together', model = 'text-davinci-003', max_tokens = 2000, n = 1, temperature = 0.8):
+        flag                     = 0
+        os.environ['OPENAI_KEY'] = api_key 
+        corpus                   = []
+        for entry in self.ask_gpt_ct:
+            target = entry[0][0]  
+            ct    = ', '.join(entry[1]) 
+            corpus.append(f'Main Node = {target}; Links = {ct}')
+        corpus                   = '\n'.join(corpus)
+        prompt                   = query + ':\n\n' + f'{corpus}\n'
+        prompt                   = prompt[:char_limit]
+        
+        if (self.version_check(1, 0, 0)):
+            flag = 1
+        else:
+            flag = 0
+            
+        analyze = self.query_chatgpt(prompt, model, max_tokens, n, temperature, flag, api_key)
+        print('Number of Characters: ' + str(len(prompt)))
+        return analyze  
+    
 ############################################################################
 
-    # Function: Ask Gemini about Authors Productivity by Year
+    # Function: Ask Gemini about Productivity by Year
     def ask_gemini_ap(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, related to authors productivity by year', model = 'gemini-1.5-flash', entry = 'aut'):
         genai.configure(api_key = api_key)
         gem    = genai.GenerativeModel(model)
@@ -6435,5 +6494,18 @@ class pbx_probe():
         analyze = analyze.text
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
- 
+
+    # Function: Ask Gemini about Heatmap
+    def ask_gemini_heat(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, the cell represents the article IDs where the row and column appear together', model = 'gemini-1.5-flash'):
+        genai.configure(api_key = api_key)
+        gem     = genai.GenerativeModel(model)
+        corpus  = self.heat_y_x.to_string()
+        corpus  = self.heat_y_x.to_csv(sep = "\t")
+        prompt  = query + ':\n\n' + f'{corpus}\n'
+        prompt  = prompt[:char_limit]
+        analyze = gem.generate_content(prompt)
+        analyze = analyze.text
+        print('Number of Characters: ' + str(len(prompt)))
+        return analyze    
+
 ############################################################################

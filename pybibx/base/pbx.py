@@ -1991,7 +1991,7 @@ class pbx_probe():
         elif (entry == 'ctr'):
             labels = self.u_ctr
             sizes  = self.ctr_count 
-            title  = 'Coutries'
+            title  = 'Countries'
         elif (entry == 'inst'):
             labels = self.u_uni
             sizes  = self.uni_count 
@@ -2939,7 +2939,7 @@ class pbx_probe():
         return
 
     # Function: Heatmap Plot Y per X
-    def plot_heatmap_y_per_x(self, x, y, topn_x = 5, topn_y = 5, rmv_unknowns = True, view = "browser"):
+    def plot_heatmap_y_per_x(self, x, y, topn_x = 5, topn_y = 5, element_x = [], element_y = [], rmv_unknowns = True, view = "browser"):
         if view == "browser":
             pio.renderers.default = "browser"
         sk_data = pd.DataFrame({ 'aut' : self.aut,
@@ -2949,6 +2949,8 @@ class pbx_probe():
                                  'kwa' : self.auk,
                                  'kwp' : self.kid,
                                  'lan' : self.lan})
+        sort_x      = True
+        sort_y      = True
         sk_data     = sk_data[[x, y]].copy()
         pair_to_ids = defaultdict(list)
         for doc_id, row in sk_data.iterrows():
@@ -2959,20 +2961,50 @@ class pbx_probe():
                     if rmv_unknowns and (str(xi).lower() == "unknown" or str(yi).lower() == "unknown"):
                         continue
                     pair_to_ids[(xi, yi)].append(doc_id)
-        x_counter = Counter()
-        for (xi, yi), id_list in pair_to_ids.items():
-            x_counter[xi] += len(id_list)
-        top_x     = [xi for xi, _ in x_counter.most_common(topn_x)]
-        y_counter = Counter()
-        for (xi, yi), id_list in pair_to_ids.items():
-            y_counter[yi] += len(id_list)
-        top_y         = [yi for yi, _ in y_counter.most_common(topn_y)]
+        #x_counter = Counter()
+        #for (xi, yi), id_list in pair_to_ids.items():
+            #x_counter[xi] += len(id_list)
+        #top_x     = [xi for xi, _ in x_counter.most_common(topn_x)]
+        #y_counter = Counter()
+        #for (xi, yi), id_list in pair_to_ids.items():
+            #y_counter[yi] += len(id_list)
+        #top_y         = [yi for yi, _ in y_counter.most_common(topn_y)]
+        if len(element_x) > 0:
+            sel_x = element_x
+        else:
+            sel_x = None
+        if len(element_y) > 0:
+            sel_y = element_y
+        else:
+            sel_y = None
+        if sel_x is None:
+            if sort_x:
+                x_counter = Counter()
+                for (xi, yi), id_list in pair_to_ids.items():
+                    x_counter[xi] = x_counter[xi] + len(id_list)
+                sel_x = [xi for xi, _ in x_counter.most_common(topn_x)]
+            else:
+                if sel_y is not None:
+                    sel_x = sorted({xi for (xi, yi) in pair_to_ids if yi in sel_y})
+                else:
+                    sel_x = sorted({xi for (xi, yi) in pair_to_ids})   
+        if sel_y is None:
+            if sort_y:
+                y_counter = Counter()
+                for (xi, yi), id_list in pair_to_ids.items():
+                    y_counter[yi] = y_counter[yi] + len(id_list)
+                sel_y = [yi for yi, _ in y_counter.most_common(topn_y)]
+            else:
+                if sel_x is not None:
+                    sel_y = sorted({yi for (xi, yi) in pair_to_ids if xi in sel_x})
+                else:
+                    sel_y = sorted({yi for (xi, yi) in pair_to_ids})
         matrix_ids    = []
         matrix_counts = []
-        for yi in top_y:
+        for yi in sel_y:
             row_ids    = []
             row_counts = []
-            for xi in top_x:
+            for xi in sel_x:
                 ids = pair_to_ids.get((xi, yi), [])
                 row_ids.append(ids.copy())         
                 row_counts.append(len(ids))        
@@ -2980,7 +3012,10 @@ class pbx_probe():
             matrix_counts.append(row_counts)
         matrix_ids    = [[list(set(cell)) if isinstance(cell,list) else cell for cell in row] for row in matrix_ids]
         matrix_counts = [[len(cell) if isinstance(cell, list) else 0 for cell in row] for row in matrix_ids]
-        self.heat_y_x = pd.DataFrame(matrix_ids, index = top_y, columns = top_x)
+        u_keys        = ['aut', 'cout', 'inst', 'jou', 'kwa', 'kwp', 'lan']
+        u_name        = ['Authors', 'Countries', 'Institutions', 'Journals', 'Auhors_Keywords', 'Keywords_Plus', 'Languages']
+        dict_n        = dict( zip( u_keys, u_name ) )
+        self.heat_y_x = pd.DataFrame(matrix_ids, index = sel_y, columns = sel_x)
         hover_text    = []
         for row in matrix_ids:
             row_text = []
@@ -2993,8 +3028,8 @@ class pbx_probe():
             hover_text.append(row_text)
         fig = go.Figure(go.Heatmap(
                                     z             = matrix_counts,
-                                    x             = top_x,         
-                                    y             = top_y,
+                                    x             = sel_x,         
+                                    y             = sel_y,
                                     text          = matrix_counts, 
                                     texttemplate  = "%{text}",     
                                     textfont      = dict(color = "black", size = 12),
@@ -3007,7 +3042,7 @@ class pbx_probe():
                                 ))
         fig.update_layout(
             title = dict(
-                          text    = f"Distribution of <b>{y}</b> per <b>{x}</b>",
+                          text    = f"Distribution of <b>{dict_n.get(y, y)}</b> per <b>{dict_n.get(x, x)}</b>",
                           x       = 0.5,
                           xanchor = "center",
                           font    = dict(size = 20)
@@ -6288,12 +6323,8 @@ class pbx_probe():
     def ask_chatgpt_heat(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, the cell represents the article IDs where the row and column appear together', model = 'text-davinci-003', max_tokens = 2000, n = 1, temperature = 0.8):
         flag                     = 0
         os.environ['OPENAI_KEY'] = api_key 
-        corpus                   = []
-        for entry in self.ask_gpt_ct:
-            target = entry[0][0]  
-            ct    = ', '.join(entry[1]) 
-            corpus.append(f'Main Node = {target}; Links = {ct}')
-        corpus                   = '\n'.join(corpus)
+        corpus                   = self.heat_y_x.to_string()
+        corpus                   = self.heat_y_x.to_csv(sep = "\t")
         prompt                   = query + ':\n\n' + f'{corpus}\n'
         prompt                   = prompt[:char_limit]
         

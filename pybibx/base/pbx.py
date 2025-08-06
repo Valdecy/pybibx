@@ -1679,10 +1679,10 @@ class pbx_probe():
         processed_affiliations = pd.Series(processed_affiliations)
         top_institutions       = processed_affiliations.apply( lambda row: extract_top_institution_with_priority(row, self.institution_names))
         inst                   = [top for top in top_institutions]
-        flattened_institutions = [institution for sublist in top_institutions for institution in sublist]
-        u_inst                 = list(set(flattened_institutions))
-        u_inst                 = [re.sub(r'^(?:[A-Za-z]\.\s?)+', '', name) for name in u_inst]
-        u_inst                 = list(set(u_inst))
+        #flattened_institutions = [institution for sublist in top_institutions for institution in sublist]
+        #u_inst                 = list(set(flattened_institutions))
+        #u_inst                 = [re.sub(r'^(?:[A-Za-z]\.\s?)+', '', name) for name in u_inst]
+        #u_inst                 = list(set(u_inst))
         self.author_inst_map   = {author: [] for author in self.u_aut}
         for index, institutions in enumerate(inst):
             for author in self.aut[index]:
@@ -1693,15 +1693,25 @@ class pbx_probe():
                 if (len(self.author_inst_map[author]) == 0):
                     self.author_inst_map[author].append((index, 'UNKNOWN'))
         self.author_inst_map = {k: list(set(v)) for k, v in self.author_inst_map.items()}
+        #inst                 = []
+        #for index, row in self.data.iterrows():
+            #row_inst = []
+            #for author in self.aut[index]: 
+                #if (author in self.author_inst_map):
+                    #for row_idx, uni in self.author_inst_map[author]:
+                        #if (row_idx == index):
+                            #row_inst.append(re.sub(r'^(?:[A-Za-z]\.\s?)+', '', uni))
+            #inst.append(row_inst)
         inst                 = []
-        for index, row in self.data.iterrows():
+        for index, authors in enumerate(self.aut):
             row_inst = []
-            for author in self.aut[index]: 
-                if (author in self.author_inst_map):
-                    for row_idx, uni in self.author_inst_map[author]:
-                        if (row_idx == index):
-                            row_inst.append(re.sub(r'^(?:[A-Za-z]\.\s?)+', '', uni))
+            for author in authors:
+                aff_list = [uni for row_idx, uni in self.author_inst_map.get(author, []) if row_idx == index]
+                aff      = aff_list[0] if aff_list else 'UNKNOWN'
+                aff      = re.sub(r'^(?:[A-Za-z]\.\s?)+', '', aff)
+                row_inst.append(aff)
             inst.append(row_inst)
+        u_inst               = list({re.sub(r'^(?:[A-Za-z]\.\s?)+', '', name).strip() for row in inst for name in row })
         self.corr_a_inst_map = {}
         for index, row in self.data.iterrows():
             if (self.database == 'wos'):
@@ -1813,6 +1823,274 @@ class pbx_probe():
         labels_r = [dict_lbs.get(label, label) for label in labels_r]
         return labels_r
     
+    ##############################################################################
+    
+    # Function: Author Profile
+    def profiling_author(self, label_name = None, label_id = None, topn = 5):
+        if label_id == None:
+            name  = label_name.lower()
+        else:
+            label_id = 'a_' + str(label_id)
+            name     = self.u_aut[int(label_id.split('_')[1])]
+        paper_idx = self.author_to_papers.get(name, [])
+        idx       = self.u_aut.index(name)
+        citation  = [self.citation[i] for i in paper_idx]
+        uni       = []
+        ctr       = []
+        for i in paper_idx:
+            for inst, author in zip(self.uni[i], self.aut[i]):
+                if inst.strip().upper() != 'UNKNOWN' and author == name:
+                    uni.append(inst.strip())
+            for country, author in zip(self.ctr[i], self.aut[i]):
+                if country.strip().upper() != 'UNKNOWN' and author == name:
+                    ctr.append(country.strip())
+        profile   =  pd.DataFrame({
+                    'Entity':             [name],
+                    'Affiliation':        [list(set(uni))],
+                    'Country':            [list(set(ctr))],
+                    'Total Publications': [len(paper_idx)],
+                    'Total Citations':    [np.sum(citation) if citation else 0],
+                    'Avg Citations':      [round(np.mean(citation), 2) if citation else 0],
+                    'h-index':            [self.aut_h[idx]],
+                    'g-index':            [self.aut_g[idx]],
+                    'e-index':            [round(self.aut_e[idx], 2)],
+                    'First Year':          [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().min()) else None],
+                    'Last Year':           [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().max()) else None],
+                    'Top Journals':       [Counter(item.strip().lower() for sublist in [self.jou[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords':       [Counter(item.strip().lower() for sublist in [self.auk[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords+':      [Counter(item.strip().lower() for sublist in [self.kid[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Co-Entities':    [Counter(item.strip().lower() for sublist in [self.aut[i] for i in paper_idx] for item in sublist if item != name).most_common(topn)],
+                    'Papers ID':          [paper_idx],
+                    'Papers Citation':    [citation],
+                    'Papers Year':        [self.data.iloc[paper_idx]['year'].to_list()],
+                                   }).T
+        return profile
+    
+    # Function: Affiliation Profile
+    def profiling_affiliation(self, label_name = None, label_id = None, topn = 5):
+        if label_id == None:
+            name  = label_name.lower()
+        else:
+            name  = self.u_uni[int(label_id.split('_')[1])]
+        paper_idx = [i for i, sublist in enumerate(self.uni) if any(name == inst.lower().strip() for inst in sublist)]
+        citation  = [self.citation[i] for i in paper_idx]
+        aut       = []
+        ctr       = []
+        for i in paper_idx:
+            for author, inst in zip(self.aut[i], self.uni[i]):
+                if author.strip().upper() != 'UNKNOWN' and inst == name:
+                    aut.append(author.strip())
+            for country, inst in zip(self.ctr[i], self.uni[i]):
+                if country.strip().upper() != 'UNKNOWN' and inst == name:
+                    ctr.append(country.strip())    
+        profile   =  pd.DataFrame({
+                    'Entity':              [name],
+                    'Authors':             [list(set(aut))],
+                    'Country':             [list(set(ctr))],
+                    'Total Publications':  [len(paper_idx)],
+                    'Total Citations':     [np.sum(citation) if citation else 0],
+                    'Avg Citations':       [round(np.mean(citation), 2) if citation else 0],
+                    'First Year':          [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().min()) else None],
+                    'Last Year':           [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().max()) else None],
+                    'Top Journals':        [Counter(item.strip().lower() for sublist in [self.jou[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords':        [Counter(item.strip().lower() for sublist in [self.auk[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords+':       [Counter(item.strip().lower() for sublist in [self.kid[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Co-Entities':     [Counter(item.strip().lower() for sublist in [self.uni[i] for i in paper_idx] for item in sublist if item != name).most_common(topn)],
+                    'Papers ID':           [paper_idx],
+                    'Papers Citation':     [citation],
+                    'Papers Year':         [self.data.iloc[paper_idx]['year'].to_list()],
+                                   }).T
+        return profile
+    
+    # Function: Country Profile
+    def profiling_country(self, label_name = None, label_id = None, topn = 5):
+        if label_id == None:
+            name  = label_name.lower()
+        else:
+            name  = self.u_ctr[int(label_id.split('_')[1])]
+        paper_idx = [i for i, sublist in enumerate(self.ctr) if any(name == ctr.strip() for ctr in sublist)]
+        citation  = [self.citation[i] for i in paper_idx]
+        aut       = []
+        uni       = []
+        for i in paper_idx:
+            for author, country in zip(self.aut[i], self.ctr[i]):
+                if  author.strip().upper() != 'UNKNOWN' and country == name:
+                    aut.append(author.strip())
+            for inst, country in zip(self.uni[i], self.ctr[i]):
+                if inst.strip().upper() != 'UNKNOWN' and country == name:
+                    uni.append(inst.strip())       
+        profile   =  pd.DataFrame({
+                    'Entity':              [name],
+                    'Authors':             [list(set(aut))],
+                    'Affiliation':         [list(set(uni))],
+                    'Total Publications':  [len(paper_idx)],
+                    'Total Citations':     [np.sum(citation) if citation else 0],
+                    'Avg Citations':       [round(np.mean(citation), 2) if citation else 0],
+                    'First Year':          [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().min()) else None],
+                    'Last Year':           [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().max()) else None],
+                    'Top Journals':        [Counter(item.strip().lower() for sublist in [self.jou[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords':        [Counter(item.strip().lower() for sublist in [self.auk[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords+':       [Counter(item.strip().lower() for sublist in [self.kid[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Co-Entities':     [Counter(item.strip().lower() for sublist in [self.ctr[i] for i in paper_idx] for item in sublist if item != name).most_common(topn)],
+                    'Papers ID':           [paper_idx],
+                    'Papers Citation':     [citation],
+                    'Papers Year':         [self.data.iloc[paper_idx]['year'].to_list()],
+                                   }).T
+        return profile
+    
+    # Function: Journal Profile
+    def profiling_journal(self, label_name = None, label_id = None, topn = 5):
+        if label_id == None:
+            name  = label_name.lower()
+        else:
+            name  = self.u_jou[int(label_id.split('_')[1])]
+        paper_idx = [i for i, sublist in enumerate(self.jou) if any(name == jou.lower().strip() for jou in sublist)]
+        citation  = [self.citation[i] for i in paper_idx]
+        aut       = []
+        uni       = []
+        ctr       = []
+        for i in paper_idx:
+            for author, journal in zip(self.aut[i], self.jou[i]):
+                if author.strip().upper() != 'UNKNOWN' and journal == name:
+                    aut.append(author.strip())
+            for inst, journal in zip(self.uni[i], self.jou[i]):
+                if inst.strip().upper() != 'UNKNOWN' and journal == name:
+                    uni.append(inst.strip())  
+            for country, journal in zip(self.ctr[i], self.jou[i]):
+                if country.strip().upper() != 'UNKNOWN' and journal == name:
+                    ctr.append(country.strip())
+        profile   =  pd.DataFrame({
+                    'Entity':              [name],
+                    'Authors':             [list(set(aut))],
+                    'Affiliation':         [list(set(uni))],
+                    'Country':             [list(set(ctr))],
+                    'Total Publications':  [len(paper_idx)],
+                    'Total Citations':     [np.sum(citation) if citation else 0],
+                    'Avg Citations':       [round(np.mean(citation), 2) if citation else 0],
+                    'First Year':          [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().min()) else None],
+                    'Last Year':           [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().max()) else None],
+                    'Top Keywords':        [Counter(item.strip().lower() for sublist in [self.auk[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords+':       [Counter(item.strip().lower() for sublist in [self.kid[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Papers ID':           [paper_idx],
+                    'Papers Citation':     [citation],
+                    'Papers Year':         [self.data.iloc[paper_idx]['year'].to_list()],
+                                   }).T
+        return profile
+      
+    # Function: Keyword Profile
+    def profiling_keyword(self, label_name = None, label_id = None, topn = 5):
+        if label_id == None:
+            name  = label_name.lower()
+        else:
+            name  = self.u_auk[int(label_id.split('_')[1])]
+        paper_idx = [i for i, sublist in enumerate(self.auk) if any(name == kwa.lower().strip() for kwa in sublist)]
+        citation  = [self.citation[i] for i in paper_idx]
+        aut       = []
+        uni       = []
+        ctr       = []
+        for i in paper_idx:
+            for author, keyword in zip(self.aut[i], self.auk[i]):
+                if  author.strip().upper() != 'UNKNOWN' and keyword == name:
+                    aut.append(author.strip())
+            for inst, keyword in zip(self.uni[i], self.auk[i]):
+                if inst.strip().upper() != 'UNKNOWN' and keyword == name:
+                    uni.append(inst.strip())  
+            for country, keyword in zip(self.ctr[i], self.auk[i]):
+                if country.strip().upper() != 'UNKNOWN' and keyword == name:
+                    ctr.append(country.strip())
+        profile   =  pd.DataFrame({
+                    'Entity':              [name],
+                    'Authors':             [list(set(aut))],
+                    'Affiliation':         [list(set(uni))],
+                    'Country':             [list(set(ctr))],
+                    'Total Publications':  [len(paper_idx)],
+                    'Total Citations':     [np.sum(citation) if citation else 0],
+                    'Avg Citations':       [round(np.mean(citation), 2) if citation else 0],
+                    'First Year':          [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().min()) else None],
+                    'Last Year':           [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().max()) else None],
+                    'Top Journals':        [Counter(item.strip().lower() for sublist in [self.jou[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords+':       [Counter(item.strip().lower() for sublist in [self.kid[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Co-Entities':     [Counter(item.strip().lower() for sublist in [self.auk[i] for i in paper_idx] for item in sublist if item != name).most_common(topn)],
+                    'Papers ID':           [paper_idx],
+                    'Papers Citation':     [citation],
+                    'Papers Year':         [self.data.iloc[paper_idx]['year'].to_list()],
+                                   }).T
+        return profile
+    
+    # Function: Keyword Plus Profile
+    def profiling_keyword_plus(self, label_name = None, label_id = None, topn = 5):
+        if label_id == None:
+            name  = label_name.lower()
+        else:
+            name  = self.u_kid[int(label_id.split('_')[1])]
+        paper_idx = [i for i, sublist in enumerate(self.kid) if any(name == kwp.lower().strip() for kwp in sublist)]
+        citation  = [self.citation[i] for i in paper_idx]
+        aut       = []
+        uni       = []
+        ctr       = []
+        for i in paper_idx:
+            for author, keyword in zip(self.aut[i], self.kid[i]):
+                if  author.strip().upper() != 'UNKNOWN' and keyword == name:
+                    aut.append(author.strip())
+            for inst, keyword in zip(self.uni[i], self.kid[i]):
+                if inst.strip().upper() != 'UNKNOWN' and keyword == name:
+                    uni.append(inst.strip())  
+            for country, keyword in zip(self.ctr[i], self.kid[i]):
+                if country.strip().upper() != 'UNKNOWN' and keyword == name:
+                    ctr.append(country.strip())
+        profile   =  pd.DataFrame({
+                    'Entity':              [name],
+                    'Authors':             [list(set(aut))],
+                    'Affiliation':         [list(set(uni))],
+                    'Country':             [list(set(ctr))],
+                    'Total Publications':  [len(paper_idx)],
+                    'Total Citations':     [np.sum(citation) if citation else 0],
+                    'Avg Citations':       [round(np.mean(citation), 2) if citation else 0],
+                    'First Year':          [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().min()) else None],
+                    'Last Year':           [int(y) if pd.notnull(y := self.data.iloc[paper_idx]['year'].dropna().max()) else None],
+                    'Top Journals':        [Counter(item.strip().lower() for sublist in [self.jou[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords':        [Counter(item.strip().lower() for sublist in [self.auk[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Co-Entities':     [Counter(item.strip().lower() for sublist in [self.kid[i] for i in paper_idx] for item in sublist if item != name).most_common(topn)],
+                    'Papers ID':           [paper_idx],
+                    'Papers Citation':     [citation],
+                    'Papers Year':         [self.data.iloc[paper_idx]['year'].to_list()],
+                                   }).T
+        return profile
+    
+    # Function: Reference Profile
+    def profiling_reference(self, label_id = None, topn = 5):
+        name      = self.u_ref[int(label_id.split('_')[1])]
+        paper_idx = [i for i, sublist in enumerate(self.ref) if any(name == ref.strip() for ref in sublist)]
+        citation  = [self.citation[i] for i in paper_idx]
+        aut       = []
+        uni       = []
+        ctr       = []
+        for i in paper_idx:
+            for author in self.aut[i]:
+                if author.strip().upper()  != 'UNKNOWN' and name in self.ref[i]:
+                    aut.append(author.strip())
+            for inst in self.uni[i]:
+                if inst.strip().upper()    != 'UNKNOWN' and name in self.ref[i]:
+                    uni.append(inst.strip())  
+            for country in self.ctr[i]:
+                if country.strip().upper() != 'UNKNOWN' and name in self.ref[i]:
+                    ctr.append(country.strip())
+        profile   =  pd.DataFrame({
+                    'Entity':              [name],
+                    'Authors':             [list(set(aut))],
+                    'Affiliation':         [list(set(uni))],
+                    'Country':             [list(set(ctr))],
+                    'Total Citations':     [len(paper_idx)],
+                    'Top Journals':        [Counter(item.strip().lower() for sublist in [self.jou[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords':        [Counter(item.strip().lower() for sublist in [self.auk[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Keywords+':       [Counter(item.strip().lower() for sublist in [self.kid[i] for i in paper_idx] for item in sublist).most_common(topn)],
+                    'Top Co-Entities':     [Counter(item.strip().lower() for sublist in [self.ref[i] for i in paper_idx] for item in sublist if item != name).most_common(topn)],
+                    'Papers ID':           [paper_idx],
+                    'Papers Citation':     [citation],
+                    'Papers Year':         [self.data.iloc[paper_idx]['year'].to_list()],
+                                   }).T
+        return profile
+
     ##############################################################################
     
     # Function: Wordcloud 

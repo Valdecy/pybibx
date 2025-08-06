@@ -23,25 +23,26 @@ General Capabilities:
 - d) Generates a Health Report to evaluate the quality of the .bib/.csv file
 - e) Generates an **EDA (Exploratory Data Analysis)** Report: Publications Timespan, Total Number of Countries, Total Number of Institutions, Total Number of Sources, Total Number of References, Total Number of Languages (and also the number of docs for each language), Total Number of Documents, Average Documents per Author, Average Documents per Institution, Average Documents per Source, Average Documents per Year, Total Number of Authors, Total Number of Authors Keywords, Total Number of Authors Keywords Plus, Total Single-Authored Documents, Total Multi-Authored Documents, Average Collaboration Index, Max H-Index, Total Number of Citations, Average Citations per Author, Average Citations per Institution, Average Citations per Document, Average Citations per Source
 - f) Creates an **ID (Identification)** for each Document, Authors, Sources, Institutions, Countries, Authors' Keywords, Keywords Plus and References. The IDs can be used in graphs/plots to obtain a cleaner visualization
-- g) Creates an **Authors's Metrics Table** with h-index, e-index, g-index and m-index
-- h) Creates a **WordCloud** from the Abstracts, Titles, Authors Keywords or Keywords Plus
-- i) Creates a **N-Gram Bar Plot (interactive plot)** from the Abstracts, Titles, Authors Keywords or Keywords Plus
-- j) Creates a **Projection (interactive plot)** of the documents based on the Abstracts, Titles, Authors Keywords or Keywords Plus
-- k) Creates an **Evolution Plot (interactive plot)** based on Abstracts, Titles, Sources, Authors Keywords or Keywords Plus
-- l) Creates an **Evolution Plot Complement (interactive plot)** based on Abstracts, Titles, Sources, Authors Keywords or Keywords Plus
-- m) Creates a **Sankey Diagram (interactive plot)** with any combination of the following keys: Authors, Countries, Institutions, Journals, Auhors_Keywords, Keywords_Plus, and/or Languages
-- n) Creates a **XY Bar Chart (interactive plot)** that displays the count of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Country
-- o) Creates a **XY Heatmap (interactive plot)** that displays the count and papers' ID of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Authors_Keywords and the papers associated to them.
-- p) Creates a **TreeMap (interactive plot)** from the Authors, Countries, Institutions, Journals, Auhors_Keywords, or Keywords_Plus
-- q) Creates an **Authors Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each author
-- r) Creates a **Countries Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each country (each author's country)
-- s) Creates a **Institutions Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each institution (each author's institution)
-- t) Creates a **Sources Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each source (journal)
-- u) Creates a **Bar Plot (interactive plot)**  for the following statistics: Documents per Year, Citations per Year, Past Citations per Year, Lotka's Law, Sources per Documents, Sources per Citations, Authors per Documents, Authors per Citations, Authors per H-Index, Bradford's Law (Core Sources 1, 2 or 3), Institutions per Documents, Institutions per Citations, Countries per Documents, Countries per Citations, Language per Documents, Keywords Plus per Documents and Authors' Keywords per Documents
-- v) Creates a **Top Reference Plot (interactive plot)** to visualize the top cited References
-- w) Creates a **Citation Trajectory Plot (interactive plot)**  that shows the yearly citation counts for each selected Reference
-- x) Creates a **Citation Matrix** that shows for each Reference, which citing articles (with their publication years) mentioned that Reference, the Unique Reference ID, and the Reference's publication year
-- y) Creates a **RPYS-Reference Publication Year Spectroscopy (interactive plot)** to visualize citation patterns over the years. Revealing the peaks in reference publication years (trough Gaussian Filters) that might indicate influential works or shifts in research trends
+- g) Generates **Profiling Functions** that are a detailed summary (profile) for any selected entity: Authors, Sources, Institutions, Countries, Authors' Keywords, Keywords Plus and References. For each entity, the function aggregates key statistics and metadata, including the list of associated publications, total and average citations, time span of activity, and more. 
+- h) Creates an **Authors's Metrics Table** with h-index, e-index, g-index and m-index
+- i) Creates a **WordCloud** from the Abstracts, Titles, Authors Keywords or Keywords Plus
+- j) Creates a **N-Gram Bar Plot (interactive plot)** from the Abstracts, Titles, Authors Keywords or Keywords Plus
+- k) Creates a **Projection (interactive plot)** of the documents based on the Abstracts, Titles, Authors Keywords or Keywords Plus
+- l) Creates an **Evolution Plot (interactive plot)** based on Abstracts, Titles, Sources, Authors Keywords or Keywords Plus
+- m) Creates an **Evolution Plot Complement (interactive plot)** based on Abstracts, Titles, Sources, Authors Keywords or Keywords Plus
+- n) Creates a **Sankey Diagram (interactive plot)** with any combination of the following keys: Authors, Countries, Institutions, Journals, Auhors_Keywords, Keywords_Plus, and/or Languages
+- o) Creates a **XY Bar Chart (interactive plot)** that displays the count of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Country
+- p) Creates a **XY Heatmap (interactive plot)** that displays the count and papers' ID of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Authors_Keywords and the papers associated to them.
+- q) Creates a **TreeMap (interactive plot)** from the Authors, Countries, Institutions, Journals, Auhors_Keywords, or Keywords_Plus
+- r) Creates an **Authors Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each author
+- s) Creates a **Countries Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each country (each author's country)
+- t) Creates a **Institutions Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each institution (each author's institution)
+- u) Creates a **Sources Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each source (journal)
+- v) Creates a **Bar Plot (interactive plot)**  for the following statistics: Documents per Year, Citations per Year, Past Citations per Year, Lotka's Law, Sources per Documents, Sources per Citations, Authors per Documents, Authors per Citations, Authors per H-Index, Bradford's Law (Core Sources 1, 2 or 3), Institutions per Documents, Institutions per Citations, Countries per Documents, Countries per Citations, Language per Documents, Keywords Plus per Documents and Authors' Keywords per Documents
+- w) Creates a **Top Reference Plot (interactive plot)** to visualize the top cited References
+- x) Creates a **Citation Trajectory Plot (interactive plot)**  that shows the yearly citation counts for each selected Reference
+- y) Creates a **Citation Matrix** that shows for each Reference, which citing articles (with their publication years) mentioned that Reference, the Unique Reference ID, and the Reference's publication year
+- z) Creates a **RPYS-Reference Publication Year Spectroscopy (interactive plot)** to visualize citation patterns over the years. Revealing the peaks in reference publication years (trough Gaussian Filters) that might indicate influential works or shifts in research trends
 
 Network Capabilities:
 - a) Creates a **Top Reference Set Matrix**, which, for a given group size n, identifies and returns the most frequently co-cited Reference groups of size n

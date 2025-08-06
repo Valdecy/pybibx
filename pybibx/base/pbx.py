@@ -1830,8 +1830,7 @@ class pbx_probe():
         if label_id == None:
             name  = label_name.lower()
         else:
-            label_id = 'a_' + str(label_id)
-            name     = self.u_aut[int(label_id.split('_')[1])]
+            name  = self.u_aut[int(label_id.split('_')[1])]
         paper_idx = self.author_to_papers.get(name, [])
         idx       = self.u_aut.index(name)
         citation  = [self.citation[i] for i in paper_idx]

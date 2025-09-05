@@ -1081,7 +1081,11 @@ class pbx_probe():
         file_extension = os.path.splitext(bib)[1].lower()
         f_list         = []
         if  (db == 'scopus' and file_extension == '.csv'):
-            data         = pd.read_csv(bib, encoding = 'utf8', dtype = str)
+            #data         = pd.read_csv(bib, encoding = 'utf8', dtype = str)
+            try:
+                data = pd.read_csv(bib, encoding = 'utf8', dtype = str)
+            except UnicodeDecodeError:
+                data = pd.read_csv(bib, encoding = 'cp1252', dtype = str)
             data.columns = data.columns.str.lower()
             if ('abbrev_source_title' not in data.columns and 'abbreviated source title' in data.columns):
                 data.rename(columns = {'abbreviated source title': 'abbrev_source_title'}, inplace = True)

@@ -1456,6 +1456,8 @@ class pbx_probe():
             data['affiliation_'] = data['affiliation_'].str.replace('#', '.', regex = False)
         data['abstract'] = data['abstract'].str.replace('[No abstract available]', 'UNKNOWN', regex = False)
         data             = data.reindex(sorted(data.columns), axis = 1)
+        if (db == 'scopus'):
+            data["abbrev_source_title"] = np.where( (data["abbrev_source_title"] == "UNKNOWN") & (data["source title"] != "UNKNOWN"), data["source title"], data["abbrev_source_title"] )
         return data, entries
     
     # Function: Update Verbose

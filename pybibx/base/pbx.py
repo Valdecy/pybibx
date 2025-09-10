@@ -1461,6 +1461,8 @@ class pbx_probe():
         data['abstract'] = data['abstract'].str.replace('[No abstract available]', 'UNKNOWN', regex = False)
         data             = data.reindex(sorted(data.columns), axis = 1)
         if (db == 'scopus'):
+            if ('source title' not in data.columns and 'journal' in data.columns):
+                data['source title'] = data['journal']
             data["abbrev_source_title"] = np.where( (data["abbrev_source_title"] == "UNKNOWN") & (data["source title"] != "UNKNOWN"), data["source title"], data["abbrev_source_title"] )
         return data, entries
     

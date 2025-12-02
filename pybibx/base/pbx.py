@@ -1464,6 +1464,7 @@ class pbx_probe():
             data['abbrev_source_title'] = np.where( (data['abbrev_source_title'] == 'UNKNOWN') & (data['source title'] != 'UNKNOWN'), data['source title'], data['abbrev_source_title'] )
         if (db == 'scopus' and file_extension == '.bib'):
             data['abbrev_source_title'] = np.where( (data['abbrev_source_title'] == 'UNKNOWN') & (data['journal'] != 'UNKNOWN'), data['journal'], data['abbrev_source_title'] )
+        data.replace(["UNKN", "unkn"], "UNKNOWN", inplace = True)
         return data, entries
     
     # Function: Update Verbose

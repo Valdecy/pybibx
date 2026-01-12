@@ -107,8 +107,8 @@ def build_edges_ref(ref_idx_list):
     count = 0
     for row in range(0, len(ref_idx_list)):
         count = count + len(ref_idx_list[row])
-    row_indices = np.empty(count, dtype=np.int32)
-    col_indices = np.empty(count, dtype=np.int32)
+    row_indices = np.empty(count, dtype = np.int32)
+    col_indices = np.empty(count, dtype = np.int32)
     pos         = 0
     for row in range(0, len(ref_idx_list)):
         refs = ref_idx_list[row]
@@ -4141,34 +4141,34 @@ class pbx_probe():
  
     # Function: Salsa (Stochastic Approximation for Local Search in Assignment Problems)
     def salsa(self, max_iter = 150, tol = 1e-6, topn_decade = 5):
+    
+        # ----------------------------------------------------------------------
         
-        #----------------------------------------------------------------------
-        
-        def build_hubs_authorities(A, hubs, authorities, out_degrees, in_degrees, max_iter, tol):
-            for it in range(0, max_iter):
+        def build_hubs_authorities_csr(A_csr_f32, hubs, authorities, out_degrees, in_degrees, max_iter, tol):
+            for _ in range(0, max_iter):
                 old_hubs = hubs.copy()
                 old_auth = authorities.copy()
                 factor1  = np.divide(hubs, out_degrees, out = np.zeros_like(hubs), where = (out_degrees != 0))
-                new_auth = np.dot(A.T, factor1)
-                factor2  = np.divide(new_auth, in_degrees, out = np.zeros_like(new_auth), where = (in_degrees != 0))
-                new_hub  = np.dot(A, factor2)
-                sum_auth = new_auth.sum()
-                if (sum_auth > 0):
+                new_auth = A_csr_f32.T @ factor1
+                factor2  = np.divide(new_auth, in_degrees, out=np.zeros_like(new_auth), where = (in_degrees != 0))
+                new_hub  = A_csr_f32 @ factor2
+                sum_auth = float(new_auth.sum())
+                if sum_auth > 0.0:
                     new_auth = new_auth / sum_auth
-                sum_hub = new_hub.sum()
-                if (sum_hub > 0):
+                sum_hub = float(new_hub.sum())
+                if sum_hub > 0.0:
                     new_hub = new_hub / sum_hub
-                hubs = new_hub
-                authorities = new_auth
+                hubs        = new_hub.astype(np.float32,  copy = False)
+                authorities = new_auth.astype(np.float32, copy = False)
                 if (np.abs(hubs - old_hubs).sum() < tol and np.abs(authorities - old_auth).sum() < tol):
                     break
             return hubs, authorities
-     
-        #----------------------------------------------------------------------
-        
-        node_mapping = {}  
-        node_ids     = []  
-        node_years   = []   
+    
+        # ----------------------------------------------------------------------
+
+        node_mapping = {}
+        node_ids     = []
+        node_years   = []
         for i in range(0, len(self.ref)):
             key = str(i)
             if key not in node_mapping:
@@ -4189,57 +4189,66 @@ class pbx_probe():
                 idx = node_mapping[key]
                 if (node_years[idx] == -1 and year != -1):
                     node_years[idx] = year
-        N = len(node_ids)
-        A = np.zeros((N, N))
+        N           = len(node_ids)
+        ref_indices = []
         for i, citations in enumerate(self.ref):
-            source_key = str(i)
-            source_idx = node_mapping[source_key]
+            filtered = []
             for citation in citations:
-                if (citation in u_ref_dict):
-                    target_key, _             = u_ref_dict[citation]
-                    target_idx                = node_mapping[target_key]
-                    A[source_idx, target_idx] = 1  
-        hubs              = np.ones(N) / N
-        authorities       = np.ones(N) / N
-        out_degrees       = A.sum(axis = 1)  
-        in_degrees        = A.sum(axis = 0)   
-        hubs, authorities = build_hubs_authorities(A, hubs, authorities, out_degrees, in_degrees, max_iter, tol)
-        year_aggregates   = {}
+                if citation in u_ref_dict:
+                    target_key, _ = u_ref_dict[citation]
+                    filtered.append(node_mapping[target_key])
+            ref_indices.append(np.array(filtered, dtype = np.int32))
+        ref_idx_list_typed = List()
+        for arr in ref_indices:
+            ref_idx_list_typed.append(arr)
+        row_indices, col_indices = build_edges_ref(ref_idx_list_typed)
+        data                     = np.ones(len(row_indices), dtype = np.float32)
+        A_csr                    = csr_matrix((data, (row_indices, col_indices)), shape = (N, N), dtype = np.float32)
+        A_csr.sum_duplicates()
+        A_csr.data[:]            = 1.0
+        hubs                     = np.full(N, 1.0 / float(N), dtype = np.float32)
+        authorities              = np.full(N, 1.0 / float(N), dtype = np.float32)
+        out_degrees              = np.asarray(A_csr.sum(axis = 1)).ravel().astype(np.float32)
+        in_degrees               = np.asarray(A_csr.sum(axis = 0)).ravel().astype(np.float32)
+        hubs, authorities        = build_hubs_authorities_csr(A_csr, hubs, authorities, out_degrees, in_degrees, max_iter, tol)
+        year_aggregates          = {}
         for idx in range(0, N):
             year = node_years[idx]
             if (year == -1):
                 continue
             if year not in year_aggregates:
                 year_aggregates[year] = {'hub_scores': [], 'authority_scores': []}
-            year_aggregates[year]['hub_scores'].append(hubs[idx])
-            year_aggregates[year]['authority_scores'].append(authorities[idx])
+            year_aggregates[year]['hub_scores'].append(float(hubs[idx]))
+            year_aggregates[year]['authority_scores'].append(float(authorities[idx]))
+    
         for year in year_aggregates:
             hs                    = year_aggregates[year]['hub_scores']
             as_                   = year_aggregates[year]['authority_scores']
             count                 = len(hs)
-            year_aggregates[year] = {'mean_hub': np.mean(hs), 'mean_authority': np.mean(as_), 'count': count}
+            year_aggregates[year] = {'mean_hub': float(np.mean(hs)) if count > 0 else 0.0, 'mean_authority': float(np.mean(as_)) if count > 0 else 0.0, 'count': count}
         result       = {'hubs': hubs, 'authorities': authorities, 'node_ids': node_ids, 'node_years': node_years, 'year_aggregates': year_aggregates}
         decade_stats = {}
         for idx, year in enumerate(result['node_years']):
             if (year == -1):
-                continue  
+                continue
             decade = int(year // 10 * 10)
             if decade not in decade_stats:
                 decade_stats[decade] = {'authorities': [], 'hubs': []}
-            decade_stats[decade]['authorities'].append(result['authorities'][idx])
-            decade_stats[decade]['hubs'].append(result['hubs'][idx])
-        decades          = sorted(decade_stats.keys())
-        top_by_decade_a  = {}
-        top_by_decade_h  = {}
-        topn             = topn_decade
+            decade_stats[decade]['authorities'].append(float(result['authorities'][idx]))
+            decade_stats[decade]['hubs'].append(float(result['hubs'][idx]))
+        decades         = sorted(decade_stats.keys())
+        top_by_decade_a = {}
+        top_by_decade_h = {}
+        topn            = topn_decade
+        
         for decade in decades:
-            indices        = [idx for idx, year in enumerate(result['node_years']) if year != -1 and int(year // 10 * 10) == decade]
-            sorted_indices = sorted(indices, key = lambda i: result['authorities'][i], reverse = True)
-            top_by_decade_a[decade] = [(result['node_ids'][i], result['authorities'][i]) for i in sorted_indices[:topn]]
-            sorted_indices = sorted(indices, key = lambda i: result['hubs'][i], reverse = True)
-            top_by_decade_h[decade] = [(result['node_ids'][i], result['hubs'][i]) for i in sorted_indices[:topn]]
+            indices                 = [idx for idx, year in enumerate(result['node_years']) if year != -1 and int(year // 10 * 10) == decade]
+            sorted_indices          = sorted(indices, key=lambda i: float(result['authorities'][i]), reverse=True)
+            top_by_decade_a[decade] = [(result['node_ids'][i], float(result['authorities'][i])) for i in sorted_indices[:topn]]
+            sorted_indices          = sorted(indices, key=lambda i: float(result['hubs'][i]), reverse = True)
+            top_by_decade_h[decade] = [(result['node_ids'][i], float(result['hubs'][i])) for i in sorted_indices[:topn]]
         return result, top_by_decade_a, top_by_decade_h
-
+    
     # Function: Detect Sleeping Beauties. Based on < https://doi.org/10.1007/s41109-021-00389-0 >
     def detect_sleeping_beauties(self, topn = 10, min_count = 10): 
         valid_years         = [int(year) for year in self.dy if year != -1]

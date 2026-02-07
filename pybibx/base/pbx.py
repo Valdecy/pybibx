@@ -14,7 +14,20 @@
 
 # Required Libraries
 import chardet
-import google.generativeai as genai
+
+GENAI_BACKEND = None
+genai         = None  
+try:
+    from google import genai as genai
+    GENAI_BACKEND = "new"
+except Exception:
+    try:
+        import google.generativeai as genai
+        GENAI_BACKEND = "old"
+    except Exception:
+        genai         = None
+        GENAI_BACKEND = None
+        
 import networkx as nx             
 import numpy as np   
 import openai       
@@ -70,7 +83,12 @@ from sklearn.decomposition import TruncatedSVD as tsvd
 from sklearn.feature_extraction.text import CountVectorizer 
 from sklearn.feature_extraction.text import TfidfVectorizer 
 from sklearn.metrics.pairwise import cosine_similarity  
-from summarizer import Summarizer
+
+try:
+    from summarizer import Summarizer as _BertExtractiveSummarizer
+except Exception:
+    _BertExtractiveSummarizer = None
+    
 from transformers import PegasusForConditionalGeneration
 from transformers import PegasusTokenizer
 from umap import UMAP  
@@ -6353,11 +6371,17 @@ class pbx_probe():
             print('')
             print('Total Number of Valid Abstracts: ', len(corpus))
             print('')
-            corpus     = ' '.join(corpus)
-            bert_model = Summarizer()
-            summary    = ''.join(bert_model(corpus, min_length = 5))
+            corpus = ' '.join(corpus)
+            if _BertExtractiveSummarizer is not None:
+                bert_model = _BertExtractiveSummarizer()
+                summary    = ''.join(bert_model(corpus, min_length = 5))
+            else:
+                from transformers import pipeline
+                summarizer = pipeline("summarization", model = "sshleifer/distilbart-cnn-12-6")
+                out        = summarizer(corpus, truncation = True, max_length = 180,  min_length = 40, do_sample = False)
+                summary    = out[0]["summary_text"]
         else:
-            summary    = 'No abstracts were found in the selected set of documents'
+            summary = 'No abstracts were found in the selected set of documents'
         return summary
 
 ############################################################################
@@ -6633,11 +6657,25 @@ class pbx_probe():
         return analyze  
     
 ############################################################################
+    
+    # Function: Gemini Legacy
+    def _gemini_generate_text(self, *, api_key, model, prompt):
+        if GENAI_BACKEND == 'new':
+            client = genai.Client(api_key = api_key)
+            resp   = client.models.generate_content(model = model, contents = prompt)
+            return getattr(resp, 'text', None) or str(resp)
+        if GENAI_BACKEND == 'old':
+            genai.configure(api_key = api_key)
+            gem  = genai.GenerativeModel(model)
+            resp = gem.generate_content(prompt)
+            return getattr(resp, 'text', None) or str(resp)
+        raise ImportError('Gemini SDK not available. Install `google-genai` (preferred) or `google-generativeai` (legacy).')
+
 
     # Function: Ask Gemini about Productivity by Year
     def ask_gemini_ap(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, related to authors productivity by year', model = 'gemini-1.5-flash', entry = 'aut'):
-        genai.configure(api_key = api_key)
-        gem    = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem    = genai.GenerativeModel(model)
         corpus = ''
         df     = []
         if (entry == 'cout'):
@@ -6654,144 +6692,155 @@ class pbx_probe():
             corpus       = corpus +  f'{element} {paper_counts}\n'
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
+        #analyze = analyze.text
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
     
     # Function: Ask Gemini about Bar Plots 
     def ask_gemini_bp(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.ask_gpt_bp.to_string(index = False)    
         prompt  = query + ' regarding ' + self.ask_gpt_bp_t + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
     
     # Function: Ask Gemini about Citation Analysis 
     def ask_gemini_citation(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.ask_gpt_nad.to_string(index = False)    
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about Collaboration Analysis
     def ask_gemini_col_an(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following network information, knowing that Node 1 is connected with Node 2', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)       
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)       
         corpus  = self.ask_gpt_adj.to_string(index = False)
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about EDA Report 
     def ask_gemini_eda(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model) 
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model) 
         corpus  = self.ask_gpt_rt.to_string(index = False)    
         lines   = corpus.split('\n')
         corpus  = '\n'.join(' '.join(line.split()) for line in lines)
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
     
     # Function: Ask Gemini about Evolution Plot
     def ask_gemini_ep(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, related to words apperance by year', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.ask_gpt_ep
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about Citation Analysis 
     def ask_gemini_hist(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information relating the most influential references, also discover if there is relevant network connections', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem    = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem    = genai.GenerativeModel(model)
         corpus = []
         for i in range(0, self.ask_gpt_hist.shape[0]):
             corpus.append('Paper ' + self.ask_gpt_hist.iloc[i,0] + ' Cites Paper ' + self.ask_gpt_hist.iloc[i,1])
         corpus  = ', '.join(corpus)    
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about Map Analysis 
     def ask_gemini_map(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.ask_gpt_map.to_string(index = False)
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about N-Grms 
     def ask_gemini_ngrams(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information relating the n-grams and their frequency', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.ask_gpt_ng.to_string(index = False)  
         lines   = corpus.split('\n')
         corpus  = '\n'.join(' '.join(line.split()) for line in lines)  
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about Sankey Diagram
     def ask_gemini_sankey(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information from a network called Sankey', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.ask_gpt_sk.to_string(index = False)   
         lines   = corpus.split('\n')
         corpus  = '\n'.join(' '.join(line.split()) for line in lines)
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about Similarity Analysis 
     def ask_gemini_sim(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.ask_gpt_sim.to_string(index = False)
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about Wordcloud 
     def ask_gemini_wordcloud(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = pd.DataFrame.from_dict(self.ask_gpt_wd, orient = 'index', columns = ['Frequency'])    
         corpus  = corpus.reset_index().rename(columns = {'index': 'Word'})
         corpus  = corpus.to_string(index = False)
@@ -6799,15 +6848,16 @@ class pbx_probe():
         corpus  = '\n'.join(' '.join(line.split()) for line in lines)
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
     
     # Function: Ask Gemini about Network Collab
     def ask_gemini_net_collab(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, the main nodes represent key entities, and the links indicate their direct connections or relationships', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem    = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem    = genai.GenerativeModel(model)
         corpus = []
         for entry in self.ask_gpt_ct:
             target = entry[0][0]  
@@ -6816,21 +6866,23 @@ class pbx_probe():
         corpus  = '\n'.join(corpus)
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze
 
     # Function: Ask Gemini about Heatmap
     def ask_gemini_heat(self, char_limit = 4097, api_key = 'your_api_key_here', query = 'give me insights about the following information, the cell represents the article IDs where the row and column appear together', model = 'gemini-1.5-flash'):
-        genai.configure(api_key = api_key)
-        gem     = genai.GenerativeModel(model)
+        #genai.configure(api_key = api_key)
+        #gem     = genai.GenerativeModel(model)
         corpus  = self.heat_y_x.to_string()
         corpus  = self.heat_y_x.to_csv(sep = "\t")
         prompt  = query + ':\n\n' + f'{corpus}\n'
         prompt  = prompt[:char_limit]
-        analyze = gem.generate_content(prompt)
-        analyze = analyze.text
+        #analyze = gem.generate_content(prompt)
+        #analyze = analyze.text
+        analyze = self._gemini_generate_text(api_key = api_key, model = model, prompt = prompt)
         print('Number of Characters: ' + str(len(prompt)))
         return analyze    
 

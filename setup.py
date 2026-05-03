@@ -6,7 +6,7 @@ long_description = (this_directory / 'README.md').read_text()
 
 setup(
     name='pybibx',
-    version='5.3.0',
+    version='5.7.0',
     license='GNU',
     author='Valdecy Pereira',
     author_email='valdecy.pereira@gmail.com',
@@ -17,6 +17,7 @@ setup(
         'bertopic',
         'bert-extractive-summarizer',
         'chardet',
+        'flask',
         'google-generativeai',
         'gensim',
         'keybert',
@@ -40,6 +41,7 @@ setup(
         'openai',
         'wordcloud'
     ],
+    entry_points={"console_scripts": ["pybibx-webapp=pybibx.base.app:web_app",]},
     zip_safe=True,
     description='A Bibliometric and Scientometric Library Powered with Artificial Intelligence Tools',
     long_description=long_description,

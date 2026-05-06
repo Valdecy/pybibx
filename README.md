@@ -77,6 +77,11 @@ Network Capabilities:
 - h) **Collaboration Analysis (interactive plot)** between Authors, Countries, Institutions or **Adjacency Analysis (interactive plot)** between Authors' Keywords or Keywords Plus. Collaboration and Adjacency can be highlighted for better visualization
 - i) **Similarity Analysis (interactive plot)** can be performed using coupling or cocitation methods
 - j) **World Map Collaboration Analysis (interactive plot)** between Countries in a Map
+- k) **Main Path Analysis** identifies the main citation backbone of the field using search path methods such as SPC, SPLC, or SPNP
+
+Scientometric Capabilities:
+- a) Computes **Reference Diversity** indicators for papers, such as breadth and temporal diversity of cited references
+- b) Computes the **Disruption Index** to identify whether papers are more disruptive or more developmental within the citation network
 
 Artificial Intelligence Capabilities:
 - a) **Topic Modelling** using BERTopic to cluster documents by topic

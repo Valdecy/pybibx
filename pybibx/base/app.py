@@ -932,6 +932,22 @@ def network():
             dist_pad=float(d.get('dist_pad',1.0))
         )
         return jsonify(res)
+    elif kind == 'main_path':
+        try:
+            result = pbx.main_path_analysis(
+                method=d.get('method', 'spc'),
+                min_path_size=int(d.get('min_path_size', 2)),
+                strict_year=bool(d.get('strict_year', True))
+            )
+            path_df = result.get('path_table')
+            edges_df = result.get('edge_weights')
+            main_path = result.get('path', [])
+            return jsonify({'ok': True, 'stdout': '', 'plotly': [], 'images': [], 'result': {'type': 'text', 'value': 'Main path: ' + (' → '.join(map(str, main_path)) if main_path else 'No main path found')}, 'tables': {
+                'main_path': _df_html(path_df, index=False),
+                'main_path_edge_weights': _df_html(edges_df, index=False)
+            }})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
     elif kind == 'adj_dir':
         res = run_fn(pbx.network_adj_dir,
             min_count=int(d.get('min_count',7)),
@@ -1017,6 +1033,26 @@ def refs():
             metrics = pbx.detect_sleeping_beauties(topn=int(d.get('topn',10)), min_count=int(d.get('min_count',5)))
             STATE['sleeping_beauties'] = metrics
         return jsonify(run_fn(pbx.detect_princes, metrics=metrics))
+    elif kind == 'reference_diversity':
+        try:
+            result = pbx.reference_diversity(paper_ids=_split_csv(d.get('paper_ids',''), int) or None)
+            return jsonify({'ok': True, 'stdout': '', 'plotly': [], 'images': [], 'result': {'type': 'text', 'value': f'Reference diversity computed for {len(result):,} paper(s).'}, 'tables': {
+                'reference_diversity': _df_html(result, index=False)
+            }})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
+    elif kind == 'disruption_index':
+        try:
+            result = pbx.disruption_index(
+                paper_ids=_split_csv(d.get('paper_ids',''), int) or None,
+                strict_future=bool(d.get('strict_future', True)),
+                min_future_citers=int(d.get('min_future_citers', 1))
+            )
+            return jsonify({'ok': True, 'stdout': '', 'plotly': [], 'images': [], 'result': {'type': 'text', 'value': f'Disruption index computed for {len(result):,} paper(s).'}, 'tables': {
+                'disruption_index': _df_html(result, index=False)
+            }})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
     return jsonify({'ok': False, 'error': 'Unknown refs kind'})
 
 @app.route('/api/cross', methods=['POST'])
@@ -1798,6 +1834,7 @@ select option{background:var(--sur);}
           <div class="fn-card" onclick="selectParams('map','network',this)"><div class="fn-card-icon">🗺</div><div class="fn-card-name">World Map</div><div class="fn-card-desc">Country collaboration on a geographic map</div></div>
           <div class="fn-card" onclick="selectParams('sim','network',this)"><div class="fn-card-icon">🔗</div><div class="fn-card-name">Similarity Network</div><div class="fn-card-desc">Bibliographic coupling or co-citation</div></div>
           <div class="fn-card" onclick="selectParams('hist','network',this)"><div class="fn-card-icon">🕰</div><div class="fn-card-name">Historiograph</div><div class="fn-card-desc">Direct citation chain over time</div></div>
+          <div class="fn-card" onclick="selectParams('mainpath','network',this)"><div class="fn-card-icon">🛤️</div><div class="fn-card-name">Main Path Analysis</div><div class="fn-card-desc">Core knowledge-flow path in the citation network</div></div>
           <div class="fn-card" onclick="selectParams('adjdir','network',this)"><div class="fn-card-icon">🧭</div><div class="fn-card-name">Directed Citation Network</div><div class="fn-card-desc">Local vs cited references in a directed citation graph</div></div>
           <div class="fn-card" onclick="selectParams('finddir','network',this)"><div class="fn-card-icon">🎯</div><div class="fn-card-name">Highlight Citation Nodes</div><div class="fn-card-desc">Focus on specific article IDs or reference IDs</div></div>
           <div class="fn-card" onclick="selectParams('salsa','network',this)"><div class="fn-card-icon">💃</div><div class="fn-card-name">SALSA</div><div class="fn-card-desc">Hub and authority analysis across decades</div></div>
@@ -1818,6 +1855,8 @@ select option{background:var(--sur);}
           <div class="fn-card" onclick="selectParams('cocitnet','references',this)"><div class="fn-card-icon">🕸</div><div class="fn-card-name">Co-Citation Network</div><div class="fn-card-desc">Network around a focal reference</div></div>
           <div class="fn-card" onclick="selectParams('sleep','references',this)"><div class="fn-card-icon">😴</div><div class="fn-card-name">Sleeping Beauties</div><div class="fn-card-desc">Late-blooming references with delayed recognition</div></div>
           <div class="fn-card" onclick="selectParams('princes','references',this)"><div class="fn-card-icon">👑</div><div class="fn-card-name">Princes</div><div class="fn-card-desc">Likely awakening papers associated with sleeping beauties</div></div>
+          <div class="fn-card" onclick="selectParams('refdiv','references',this)"><div class="fn-card-icon">📚</div><div class="fn-card-name">Reference Diversity</div><div class="fn-card-desc">Breadth and age profile of each paper's references</div></div>
+          <div class="fn-card" onclick="selectParams('disruption','references',this)"><div class="fn-card-icon">⚡</div><div class="fn-card-name">Disruption Index</div><div class="fn-card-desc">Whether papers disrupt or consolidate prior work</div></div>
         </div>
         <div class="fn-hint">Click any function card to configure its parameters →</div>
       </div>
@@ -1857,7 +1896,7 @@ select option{background:var(--sur);}
             <div class="fn-card" data-topic-required="1" onclick="selectAIGraph('time',this)"><div class="fn-card-icon">⏳</div><div class="fn-card-name">Topics over Time</div><div class="fn-card-desc">Topic frequency evolution</div><div class="fn-card-meta">Requires Create Topics</div></div>
             <div class="fn-card" data-topic-required="1" onclick="selectParams('ai-authors','ai',this)"><div class="fn-card-icon">👩‍🔬</div><div class="fn-card-name">Authors per Topic</div><div class="fn-card-desc">Top authors contributing to each topic</div><div class="fn-card-meta">Requires Create Topics</div></div>
             <div class="fn-card" data-topic-required="1" onclick="selectParams('ai-representatives','ai',this)"><div class="fn-card-icon">📄</div><div class="fn-card-name">Representative Docs</div><div class="fn-card-desc">Most representative documents for each topic</div><div class="fn-card-meta">Requires Create Topics</div></div>
-            <div class="fn-card" data-topic-required="1" onclick="selectParams('ai-doc-topic','ai',this)"><div class="fn-card-icon">📝</div><div class="fn-card-name">AI - Topics</div><div class="fn-card-desc">Topic alignment for words in one document</div><div class="fn-card-meta">Requires Create Topics</div></div>
+            <div class="fn-card" data-topic-required="1" onclick="selectParams('ai-doc-topic','ai',this)"><div class="fn-card-icon">📝</div><div class="fn-card-name">Doc - Topic Alignment</div><div class="fn-card-desc">Topic alignment for words in one document</div><div class="fn-card-meta">Requires Create Topics</div></div>
           </div>
           <div class="fn-hint">Run “Create Topics” first to unlock the topic-dependent cards.</div>
         </div>
@@ -2227,6 +2266,19 @@ select option{background:var(--sur);}
         </div>
       </div>
 
+      <!-- NETWORK: MAIN PATH -->
+      <div class="params-section" id="params-mainpath">
+        <div class="params-box">
+          <div class="params-title">Main Path Analysis Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Method</label><select id="mp-method"><option value="spc" selected>SPC</option><option value="splc">SPLC</option><option value="spnp">SPNP</option></select></div>
+            <div class="param-item"><label class="fl">Min path size</label><input type="number" id="mp-minsize" value="2" min="1"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="mp-strict" checked/><span>Enforce strict year ordering</span></div>
+          <button class="run-btn" onclick="runNetwork('main_path',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
       <!-- NETWORK: DIRECTED CITATION -->
       <div class="params-section" id="params-adjdir">
         <div class="params-box">
@@ -2328,6 +2380,31 @@ select option{background:var(--sur);}
             <div class="param-item"><label class="fl">Fallback minimum citation count</label><input type="number" id="prin-minc" value="5" min="1"/></div>
           </div>
           <button class="run-btn" onclick="runRefsExtra('princes',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
+      <!-- REFS: REFERENCE DIVERSITY -->
+      <div class="params-section" id="params-refdiv">
+        <div class="params-box">
+          <div class="params-title">Reference Diversity Parameters</div>
+          <div class="callout info" style="margin-bottom:12px;">Leave paper IDs empty to analyze all papers.</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Paper IDs (comma-sep)</label><input type="text" id="rd-paperids" placeholder="optional, e.g. 8, 56, 87"/></div>
+          </div>
+          <button class="run-btn" onclick="runRefsExtra('reference_diversity',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
+      <!-- REFS: DISRUPTION INDEX -->
+      <div class="params-section" id="params-disruption">
+        <div class="params-box">
+          <div class="params-title">Disruption Index Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Paper IDs (comma-sep)</label><input type="text" id="di-paperids" placeholder="optional, e.g. 8, 56, 87"/></div>
+            <div class="param-item"><label class="fl">Min future citers</label><input type="number" id="di-minfuture" value="1" min="0"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="di-strict" checked/><span>Only count strictly future citers</span></div>
+          <button class="run-btn" onclick="runRefsExtra('disruption_index',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
         </div>
       </div>
 
@@ -3572,7 +3649,8 @@ function runNetwork(kind, btn){
     adj:  {kind:'adj',adj_type:document.getElementById('adj-type').value,min_count:document.getElementById('adj-min').value,node_labels:document.getElementById('adj-labels').checked,node_size:document.getElementById('adj-size').value,label_type:document.getElementById('adj-labeltype').value,centrality:document.getElementById('adj-centrality').value},
     map:  {kind:'map',connections:document.getElementById('map-conn').checked,country_lst:document.getElementById('map-countries').value},
     sim:  {kind:'sim',sim_type:document.getElementById('sim-type').value,node_size:document.getElementById('sim-size').value,node_labels:document.getElementById('sim-labels').checked,cut_coup:document.getElementById('sim-coup').value,cut_cocit:document.getElementById('sim-cocit').value},
-    hist: {kind:'hist',min_links:document.getElementById('hist-min').value,chain:document.getElementById('hist-chain').value,path:document.getElementById('hist-path').checked,node_size:document.getElementById('hist-size').value,font_size:document.getElementById('hist-font').value,node_labels:document.getElementById('hist-labels').checked,dist:document.getElementById('hist-dist').value,dist_pad:document.getElementById('hist-distpad').value}
+    hist: {kind:'hist',min_links:document.getElementById('hist-min').value,chain:document.getElementById('hist-chain').value,path:document.getElementById('hist-path').checked,node_size:document.getElementById('hist-size').value,font_size:document.getElementById('hist-font').value,node_labels:document.getElementById('hist-labels').checked,dist:document.getElementById('hist-dist').value,dist_pad:document.getElementById('hist-distpad').value},
+    main_path: {kind:'main_path',method:document.getElementById('mp-method').value,min_path_size:document.getElementById('mp-minsize').value,strict_year:document.getElementById('mp-strict').checked}
   };
   runAndDisplay('/api/network', bodies[kind]||{kind}, btn, 'Network '+kind);
 }
@@ -3605,7 +3683,9 @@ function runRefsExtra(kind, btn){
     co_refs: {kind:'co_refs',group:document.getElementById('cr-group').value,topn:document.getElementById('cr-topn').value},
     co_citation_network: {kind:'co_citation_network',target_ref_id:document.getElementById('ccn-target').value,topn:document.getElementById('ccn-topn').value},
     sleeping_beauties: {kind:'sleeping_beauties',topn:document.getElementById('sb-topn').value,min_count:document.getElementById('sb-minc').value},
-    princes: {kind:'princes',topn:document.getElementById('prin-topn').value,min_count:document.getElementById('prin-minc').value}
+    princes: {kind:'princes',topn:document.getElementById('prin-topn').value,min_count:document.getElementById('prin-minc').value},
+    reference_diversity: {kind:'reference_diversity',paper_ids:document.getElementById('rd-paperids').value},
+    disruption_index: {kind:'disruption_index',paper_ids:document.getElementById('di-paperids').value,strict_future:document.getElementById('di-strict').checked,min_future_citers:document.getElementById('di-minfuture').value}
   };
   runAndDisplay('/api/refs', bodies[kind]||{kind}, btn, 'References');
 }
@@ -4160,7 +4240,7 @@ def web_app(port=5173, open_browser=True):
     import socket
 
     if _SERVER is not None:
-        print(f"\n  🔬 PyBibX Web App already running  →  {_SERVER_URL}\n")
+        print(f"\n  pybibx Web App already running  →  {_SERVER_URL}\n")
         return _SERVER_URL
 
     def free_port(p):
@@ -4181,8 +4261,13 @@ def web_app(port=5173, open_browser=True):
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
-    print(f"\n  🔬 PyBibX Web App  →  {url}")
-    print("  Use pybibx.web_stop() to stop\n")
+    print(f"\n  ╔══════════════════════════════════════════╗")
+    print(f"      pybibx Web App       ")
+    print(f"      {url:<40}")
+    print(f"  ╚══════════════════════════════════════════╝\n")
+    print("")
+    print("Terminate the web service using: pybibx.web_stop() \n")
+
 
     return url
     
@@ -4191,7 +4276,7 @@ def web_stop():
     global _SERVER, _SERVER_THREAD, _SERVER_URL
 
     if _SERVER is None:
-        print("\n  PyBibX Web App is not running.\n")
+        print("\n  pybibx Web App is not running.\n")
         return False
 
     _SERVER.shutdown()
@@ -4204,7 +4289,7 @@ def web_stop():
     _SERVER_THREAD = None
     _SERVER_URL = None
 
-    print("\n  PyBibX Web App stopped.\n")
+    print("\n  pybibx Web App stopped.\n")
     return True
 
 def launch(port=5173, open_browser=True):

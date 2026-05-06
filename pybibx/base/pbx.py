@@ -28,6 +28,14 @@ except ImportError:
     import importlib_resources as pkg_resources
 
 from . import stws
+from .batch import (
+    BatchConfig,
+    estimate_dataframe_memory_mb,
+    should_batch_df,
+    chunk_dataframe,
+    chunk_list,
+    concat_numpy_chunks,
+)
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from itertools import combinations
@@ -686,10 +694,117 @@ class pbx_probe():
             if (file_bib is None):
                 raise ValueError('file_bib is required unless a DataFrame is provided via data=...')
             self.data, self.entries = self.__read_bib(file_bib, db, del_duplicated)
+        self.batch_config = BatchConfig()
         self.__make_bib()
     
-    # Function: Prepare .bib File
+    # Function: Configure batch processing
+    def set_batch_config(self, **kwargs):
+        """Update one or more BatchConfig fields on this instance.
+
+        Unknown keys raise ValueError. Returns nothing. Calling this
+        only changes future invocations; nothing is recomputed.
+        """
+        if not hasattr(self, 'batch_config') or self.batch_config is None:
+            self.batch_config = BatchConfig()
+        for key, value in kwargs.items():
+            if not hasattr(self.batch_config, key):
+                raise ValueError(f"Unknown batch config option: {key}")
+            setattr(self.batch_config, key, value)
+        return
+
+    # Function: Decide whether a given operation should run in batch mode
+    def _should_batch(self, df = None, op = "general"):
+        """Return True if the chunked path should be used."""
+        if not hasattr(self, 'batch_config') or self.batch_config is None:
+            self.batch_config = BatchConfig()
+        cfg = self.batch_config
+        mode = getattr(cfg, 'mode', 'auto')
+        if (mode == 'off'):
+            return False
+        if (mode == 'on'):
+            return True
+        if df is None:
+            df = getattr(self, 'data', None)
+        return should_batch_df(df, cfg)
+
+    # Function: Resolve the chunk size for a given operation
+    def _get_chunk_size(self, op = "general"):
+        if not hasattr(self, 'batch_config') or self.batch_config is None:
+            self.batch_config = BatchConfig()
+        cfg = self.batch_config
+        if op in ('text', 'clear_text'):
+            return cfg.text_chunk_size
+        if op in ('count', 'make_bib'):
+            return cfg.count_chunk_size
+        if op in ('dedup', 'merge_database'):
+            return cfg.dedup_chunk_size
+        if op in ('embeddings',):
+            return cfg.embedding_text_chunk_size
+        return cfg.count_chunk_size
+
+    # ----------------------------------------------------------------
+    # Chunk-safe helpers (used by both small and batch paths).
+    # These are pure helpers: they take the data they need as an
+    # argument and do not read self.data directly.
+    # ----------------------------------------------------------------
+
+    def _split_multivalue_series_chunk(self, series, sep = ';', lower = True, is_reference = False):
+        """Per-chunk equivalent of __get_str's row-level parsing.
+
+        Splits each cell of ``series`` on ``sep``, normalizes whitespace,
+        optionally lowercases, and (when ``is_reference``) drops cells
+        that are bare 4-digit years. Empty strings and the literal
+        ``'note'`` are filtered out.
+
+        Returns ``(rows, unique)`` where ``rows`` is a list of lists
+        (one per row of ``series``) and ``unique`` is the unique set
+        across just this chunk as an *unsorted* list — callers sort
+        if they want a stable order. ``__make_bib_batch`` discards
+        ``unique`` and accumulates Counters across chunks instead.
+        """
+        def _is_year_parentheses(ref):
+            cleaned = re.sub(r'^[\s,;:.()\[\]{}]+|[\s,;:.()\[\]{}]+$', '', ref)
+            return bool(re.fullmatch(r'\d{4}', cleaned))
+
+        if is_reference:
+            rows = [
+                [
+                    (' '.join(item.split()).lower() if lower else ' '.join(item.split()))
+                    for item in e.split(sep)
+                    if item.strip() and item.strip() != 'note' and not _is_year_parentheses(item)
+                ] if isinstance(e, str) else []
+                for e in series
+            ]
+        else:
+            rows = [
+                [
+                    (' '.join(item.split()).lower() if lower else ' '.join(item.split()))
+                    for item in e.split(sep)
+                    if item.strip() and item.strip() != 'note'
+                ] if isinstance(e, str) else []
+                for e in series
+            ]
+        unique = {item for sublist in rows for item in sublist}
+        if '' in unique:
+            unique.discard('')
+        return rows, list(unique)
+
+    def _parse_citation_series_chunk(self, series):
+        """Chunk-safe wrapper around __get_citations."""
+        return self.__get_citations(series)
+
+    # ----------------------------------------------------------------
+    # __make_bib dispatcher + small (legacy) path + batch path.
+    # ----------------------------------------------------------------
+
+    # Function: Prepare .bib File (dispatcher)
     def __make_bib(self, verbose = True):
+        if self._should_batch(getattr(self, 'data', None), op = "make_bib"):
+            return self.__make_bib_batch(verbose = verbose)
+        return self.__make_bib_small(verbose = verbose)
+
+    # Function: Prepare .bib File (small/in-memory legacy path)
+    def __make_bib_small(self, verbose = True):
         self.data                  = self.data.reset_index(drop = True).copy()
         self.ask_gpt_ap            = -1
         self.ask_gpt_cp            = -1
@@ -805,6 +920,489 @@ class pbx_probe():
             for i in range(0, len(self.vb)):
                 print(self.vb[i])
         return
+
+    # Function: Prepare .bib File (chunked/batch path)
+    def __make_bib_batch(self, verbose = True):
+        """Streaming equivalent of __make_bib_small.
+
+        Produces the same public attributes as the in-memory path, but
+        parses self.data in chunks and uses Counter accumulators in
+        place of the O(|u_*| * N) __get_counts re-scans.
+
+        Year, citations, references, authors, keywords, author keywords,
+        sources, languages, **countries** and **institutions** are all
+        parsed and aggregated chunk by chunk — the batch path does not
+        fall back to __get_countries() or __get_institutions(). The
+        author/correspondent/first-author country and institution side
+        maps are rebuilt from the streamed data after the chunk loop.
+
+        Only the strictly post-aggregation helpers are reused from the
+        small path because they already operate on the finalized
+        self.aut / self.ref / self.citation: h/g/e/j indices,
+        __total_and_self_citations, __get_collaboration_year,
+        __get_ref_year, __get_ref_id, and the __id_* lookup builders.
+        """
+        self.data                  = self.data.reset_index(drop = True).copy()
+        self.ask_gpt_ap            = -1
+        self.ask_gpt_cp            = -1
+        self.ask_gpt_ip            = -1
+        self.ask_gpt_sp            = -1
+        self.ask_gpt_bp            = -1
+        self.ask_gpt_ct            = -1
+        self.ask_gpt_ep            = -1
+        self.ask_gpt_ng            = -1
+        self.ask_gpt_rt            = -1
+        self.ask_gpt_sk            = -1
+        self.ask_gpt_wd            = -1
+        self.author_country_map    = -1
+        self.corr_a_country_map    = -1
+        self.frst_a_country_map    = -1
+        self.author_inst_map       = -1
+        self.corr_a_inst_map       = -1
+        self.frst_a_inst_map       = -1
+        self.top_y_x               = -1
+        self.heat_y_x              = -1
+        self.top_refs              = -1
+        self.rpys_pk               = -1
+        self.rpys_rs               = -1
+        self.top_co_c              = -1
+        self.natsort               = lambda s: [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+        if self.data.empty:
+            # Same empty-state initialization as the small path.
+            return self.__make_bib_small(verbose = verbose)
+        self.data['year']  = self.data['year'].replace('UNKNOWN', '0')
+        chunk_size         = self._get_chunk_size('make_bib')
+        if getattr(self.batch_config, 'verbose', False):
+            print(f'[pybibx batch] __make_bib_batch: rows={len(self.data)}, chunk_size={chunk_size}')
+
+        # ---- Streaming accumulators ----
+        all_years     = []
+        all_citations = []
+        all_ref       = []
+        all_aut       = []
+        all_kid       = []
+        all_auk       = []
+        all_jou       = []
+        all_lan       = []
+        all_ctr       = []
+        all_uni       = []
+
+        u_ref_counter = Counter()
+        u_aut_counter = Counter()
+        u_kid_counter = Counter()
+        u_auk_counter = Counter()
+        u_jou_counter = Counter()
+        u_lan_counter = Counter()
+        u_ctr_counter = Counter()
+        u_uni_counter = Counter()
+
+        author_to_papers        = defaultdict(list)
+        author_cit_counter      = Counter()
+        journal_cit_counter     = Counter()
+        country_cit_counter     = Counter()
+        institution_cit_counter = Counter()
+        author_doc_counter      = Counter()
+        journal_doc_counter     = Counter()
+        country_doc_counter     = Counter()
+        institution_doc_counter = Counter()
+
+        global_offset = 0
+        for chunk in chunk_dataframe(self.data, chunk_size):
+            n = len(chunk)
+            if n == 0:
+                continue
+
+            # Year
+            chunk_years = pd.to_numeric(chunk['year'], errors = 'coerce', downcast = 'float').tolist()
+            all_years.extend(chunk_years)
+
+            # Citations
+            chunk_cits = self._parse_citation_series_chunk(chunk['note'])
+            all_citations.extend(chunk_cits)
+
+            # Multi-valued fields
+            ref_chunk, _ = self._split_multivalue_series_chunk(chunk['references'],          sep = ';',     lower = False, is_reference = True)
+            aut_chunk, _ = self._split_multivalue_series_chunk(chunk['author'],              sep = ' and ', lower = True)
+            kid_chunk, _ = self._split_multivalue_series_chunk(chunk['keywords'],            sep = ';',     lower = True)
+            auk_chunk, _ = self._split_multivalue_series_chunk(chunk['author_keywords'],     sep = ';',     lower = True)
+            jou_chunk, _ = self._split_multivalue_series_chunk(chunk['abbrev_source_title'], sep = ';',     lower = True)
+            lan_chunk, _ = self._split_multivalue_series_chunk(chunk['language'],            sep = '.',     lower = True)
+
+            # Countries / institutions: depend on the chunk's authors,
+            # so do them right after parsing aut_chunk.
+            ctr_chunk, _ = self._extract_countries_chunk(chunk, aut_chunk, global_offset)
+            uni_chunk, _ = self._extract_institutions_chunk(chunk, aut_chunk, global_offset)
+
+            all_ref.extend(ref_chunk)
+            all_aut.extend(aut_chunk)
+            all_kid.extend(kid_chunk)
+            all_auk.extend(auk_chunk)
+            all_jou.extend(jou_chunk)
+            all_lan.extend(lan_chunk)
+            all_ctr.extend(ctr_chunk)
+            all_uni.extend(uni_chunk)
+
+            # Counters: flat counts (used to drive filter_list-equivalent
+            # outputs) and per-row presence-counts (used for *_cit /
+            # doc_aut, equivalent to __get_counts with `u in e`).
+            for refs in ref_chunk:
+                u_ref_counter.update(refs)
+            for kid in kid_chunk:
+                u_kid_counter.update(kid)
+            for auk in auk_chunk:
+                u_auk_counter.update(auk)
+            for lan in lan_chunk:
+                u_lan_counter.update(lan)
+            for jou in jou_chunk:
+                u_jou_counter.update(jou)
+            for aut_list in aut_chunk:
+                u_aut_counter.update(aut_list)
+            for ctrs in ctr_chunk:
+                u_ctr_counter.update(ctrs)
+            for unis in uni_chunk:
+                u_uni_counter.update(unis)
+
+            # author_to_papers, *_cit and doc_aut counters.
+            for local_i in range(0, n):
+                global_i     = global_offset + local_i
+                authors      = aut_chunk[local_i]
+                journals     = jou_chunk[local_i]
+                countries    = ctr_chunk[local_i]
+                institutions = uni_chunk[local_i]
+                cit_count    = chunk_cits[local_i]
+                # author_to_papers preserves duplicates (same as
+                # __make_bib_small).
+                for author in authors:
+                    author_to_papers[author].append(global_i)
+                # Per-row presence count (deduped within the row), to
+                # match `u in e` semantics of __get_counts.
+                for author in set(authors):
+                    author_cit_counter[author] += cit_count
+                    author_doc_counter[author] += 1
+                for j in set(journals):
+                    journal_cit_counter[j] += cit_count
+                    journal_doc_counter[j] += 1
+                for c in set(countries):
+                    country_cit_counter[c] += cit_count
+                    country_doc_counter[c] += 1
+                for u in set(institutions):
+                    institution_cit_counter[u] += cit_count
+                    institution_doc_counter[u] += 1
+
+            global_offset += n
+
+        # ---- Finalize public attributes ----
+        self.dy        = pd.Series(all_years, dtype = 'float64').reset_index(drop = True)
+        valid_years    = self.dy.dropna()
+        self.date_str  = int(valid_years.min()) if not valid_years.empty else 0
+        self.date_end  = int(valid_years.max()) if not valid_years.empty else 0
+        self.doc_types = self.data['document_type'].value_counts().sort_index()
+        self.av_d_year = self.dy.dropna().value_counts().sort_index()
+        self.av_d_year = round(self.av_d_year.mean(), 2) if len(self.av_d_year) > 0 else 0
+        self.citation  = all_citations
+        self.av_c_doc  = round(sum(self.citation) / self.data.shape[0], 2) if self.data.shape[0] > 0 else 0
+
+        # References (raw): __get_str sorts unique alphabetically; so do we.
+        self.ref       = all_ref
+        self.u_ref     = sorted(u_ref_counter.keys())
+
+        # Authors: __get_str alphabetic.
+        self.aut       = all_aut
+        self.u_aut     = sorted(u_aut_counter.keys())
+
+        self.aut_h     = self.h_index()
+        self.aut_g     = self.g_index()
+        self.aut_e     = self.e_index()
+        self.aut_j     = self.j_index()
+        self.aut_docs  = [len(item) for item in self.aut]
+        self.aut_single = len([item for item in self.aut_docs if item == 1])
+        self.aut_multi  = [item for item in self.aut_docs if item > 1]
+
+        # aut_cit equivalent to __get_counts(u_aut, aut, citation) since
+        # author_cit_counter accumulates one citation contribution per
+        # row per distinct author.
+        self.aut_cit          = [author_cit_counter[a] for a in self.u_aut]
+        self.author_to_papers = author_to_papers
+
+        # Keywords / author keywords / journals: filter_list with
+        # default simple=False (drops 'unknown', sorts by count desc).
+        self.kid                   = all_kid
+        u_kid_raw                  = sorted(u_kid_counter.keys())
+        self.u_kid, self.kid_count = self._filter_list_from_counter(u_kid_raw, u_kid_counter, simple = False)
+
+        self.auk                   = all_auk
+        u_auk_raw                  = sorted(u_auk_counter.keys())
+        self.u_auk, self.auk_count = self._filter_list_from_counter(u_auk_raw, u_auk_counter, simple = False)
+
+        self.jou                   = all_jou
+        u_jou_raw                  = sorted(u_jou_counter.keys())
+        self.u_jou, self.jou_count = self._filter_list_from_counter(u_jou_raw, u_jou_counter, simple = False)
+        # jou_cit aligned to the (re-sorted) u_jou:
+        self.jou_cit               = [journal_cit_counter[j] for j in self.u_jou]
+
+        # Languages: filter_list with simple=True (alphabetic order).
+        self.lan                   = all_lan
+        u_lan_raw                  = sorted(u_lan_counter.keys())
+        self.u_lan, self.lan_count = self._filter_list_from_counter(u_lan_raw, u_lan_counter, simple = True)
+
+        # Countries: built incrementally during the chunk loop above.
+        self.ctr                   = self.replace_unknowns(all_ctr)
+        u_ctr_raw                  = sorted(u_ctr_counter.keys())
+        self.u_ctr, self.ctr_count = self._filter_list_from_counter(u_ctr_raw, u_ctr_counter, simple = True)
+        self.ctr_cit               = [country_cit_counter[c] for c in self.u_ctr]
+        # Rebuild author_country_map / corr_a_country_map / frst_a_country_map
+        # from the streamed data so the public attributes match the
+        # small path's shape.
+        self._build_country_side_maps_from_streams(all_aut, all_ctr)
+
+        # Institutions: built incrementally during the chunk loop above.
+        self.uni                   = self.replace_unknowns(all_uni)
+        u_uni_raw                  = sorted(u_uni_counter.keys())
+        self.u_uni, self.uni_count = self._filter_list_from_counter(u_uni_raw, u_uni_counter, simple = True)
+        self.uni_cit               = [institution_cit_counter[u] for u in self.u_uni]
+        self._build_institution_side_maps_from_streams(all_aut, all_uni)
+
+        # doc_aut: equivalent to __get_counts(u_aut, aut) (presence).
+        self.doc_aut    = [author_doc_counter[a] for a in self.u_aut]
+        self.av_doc_aut = round(sum(self.doc_aut) / len(self.doc_aut), 2) if len(self.doc_aut) > 0 else 0
+
+        self.t_c, self.s_c = self.__total_and_self_citations()
+        self.r_c           = [self.s_c[i] / max(self.t_c[i], 1) for i in range(0, len(self.t_c))]
+        self.dy_c_year     = self.__get_collaboration_year()
+        self.u_ref         = [ref for ref in self.u_ref if ref.lower() != 'unknown']
+        self.dy_ref        = self.__get_ref_year()
+        self.u_ref_id      = self.__get_ref_id()
+        ref_map            = dict(zip(self.u_ref, self.u_ref_id))
+        self.ref_id        = []
+        for ref_list in self.ref:
+            r_id = [ref_map.get(ref, ref) for ref in ref_list]
+            self.ref_id.append(r_id)
+
+        self.__id_document()
+        self.__id_author()
+        self.__id_source()
+        self.__id_institution()
+        self.__id_country()
+        self.__id_kwa()
+        self.__id_kwp()
+        if (verbose == True):
+            for i in range(0, len(self.vb)):
+                print(self.vb[i])
+        return
+
+    # Helper: filter_list-equivalent built on top of a Counter so we
+    # avoid the O(|u_e| * N_flat) e_.count() scan inside filter_list.
+    def _filter_list_from_counter(self, u_e, counter, simple = False):
+        if (simple == True):
+            keys      = list(u_e)
+            counts    = [counter[k] for k in keys]
+            return keys, counts
+        keys   = [item for item in u_e if item.lower() != 'unknown']
+        counts = [counter[k] for k in keys]
+        idx    = sorted(range(len(counts)), key = counts.__getitem__)
+        idx.reverse()
+        keys   = [keys[i]   for i in idx]
+        counts = [counts[i] for i in idx]
+        return keys, counts
+
+    # Side-map rebuilders used by __make_bib_batch to keep the public
+    # author_*_map / corr_a_*_map / frst_a_*_map attributes consistent
+    # with the small path's shape, without re-running the full-data
+    # __get_countries / __get_institutions pipelines.
+    def _build_country_side_maps_from_streams(self, all_aut, all_ctr):
+        self.author_country_map = {a: [] for a in self.u_aut}
+        seen = set()
+        for row_idx in range(0, len(all_aut)):
+            authors_row   = all_aut[row_idx]
+            countries_row = all_ctr[row_idx]
+            for author, country in zip(authors_row, countries_row):
+                key = (author, row_idx)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if author in self.author_country_map:
+                    self.author_country_map[author].append((row_idx, country))
+        self.corr_a_country_map = {}
+        for index, row in self.data.iterrows():
+            if (self.database.lower() == 'wos'):
+                if ('Corresponding Author' in row['affiliation_']):
+                    corresponding_author = next((author for author in self.aut[index] if 'Corresponding Author' in row['affiliation_']), None)
+                    if (corresponding_author and corresponding_author in self.author_country_map):
+                        self.corr_a_country_map[corresponding_author] = self.author_country_map[corresponding_author]
+            else:
+                corresponding_author = next((author for author in self.aut[index] if 'corresponding author' in row['correspondence_address1'].lower()), None)
+                if (corresponding_author and corresponding_author in self.author_country_map):
+                    self.corr_a_country_map[corresponding_author] = self.author_country_map[corresponding_author]
+        self.frst_a_country_map = {}
+        for index, row in self.data.iterrows():
+            if (self.aut[index]):
+                first_author = self.aut[index][0]
+                if (first_author in self.author_country_map):
+                    self.frst_a_country_map[first_author] = self.author_country_map[first_author]
+        return
+
+    def _build_institution_side_maps_from_streams(self, all_aut, all_uni):
+        # Original __get_institutions ends with a `set(v)` dedup of the
+        # (row_idx, institution) tuples per author. We replicate that
+        # final shape directly.
+        author_inst_set = {a: set() for a in self.u_aut}
+        for row_idx in range(0, len(all_aut)):
+            authors_row = all_aut[row_idx]
+            insts_row   = all_uni[row_idx]
+            for author, inst in zip(authors_row, insts_row):
+                if author in author_inst_set:
+                    author_inst_set[author].add((row_idx, inst))
+        self.author_inst_map = {a: list(s) for a, s in author_inst_set.items()}
+        self.corr_a_inst_map = {}
+        for index, row in self.data.iterrows():
+            if (self.database == 'wos'):
+                if ('corresponding author' in row['affiliation_'].lower()):
+                    corresponding_author = next((author for author in self.aut[index] if 'corresponding author' in row['affiliation_'].lower()), None)
+                    if (corresponding_author and corresponding_author in self.author_inst_map):
+                        self.corr_a_inst_map[corresponding_author] = self.author_inst_map[corresponding_author]
+            else:
+                if ('corresponding author' in row['correspondence_address1'].lower()):
+                    corresponding_author = next((author for author in self.aut[index] if 'corresponding author' in row['correspondence_address1'].lower()), None)
+                    if (corresponding_author and corresponding_author in self.author_inst_map):
+                        self.corr_a_inst_map[corresponding_author] = self.author_inst_map[corresponding_author]
+        self.frst_a_inst_map = {}
+        for index, row in self.data.iterrows():
+            if (self.aut[index]):
+                first_author = self.aut[index][0]
+                if (first_author in self.author_inst_map):
+                    self.frst_a_inst_map[first_author] = self.author_inst_map[first_author]
+        return
+
+    # Chunk-safe country/institution helpers used by __make_bib_batch.
+    # They preserve the row-level extraction logic of __get_countries /
+    # __get_institutions but expose a chunk entry point so the batch
+    # path can avoid falling back to full-data extraction.
+    def _extract_countries_chunk(self, chunk, authors_chunk, _row_offset = 0):
+        """Return (rows, unique) of countries for a single chunk.
+
+        Uses the same affiliation preprocessing as __get_countries but
+        operates on a slice of self.data plus the authors aligned to
+        that slice. ``_row_offset`` is reserved for future row-aware
+        logic (e.g. emitting (global_row_index, country) tuples
+        directly during streaming). Currently unused.
+        """
+        country_replacements = {
+            ' usa':            ' united states of america',
+            'england':         'united kingdom',
+            'antigua & barbu': 'antigua and barbuda',
+            'bosnia & herceg': 'bosnia and herzegovina',
+            'cent afr republ': 'central african republic',
+            'czech republic':  'czechia',
+            'dominican rep':   'dominican republic',
+            'equat guinea':    'equatorial guinea',
+            'fr austr lands':  'french southern territories',
+            'fr polynesia':    'french polynesia',
+            'malagasy republ': 'madagascar',
+            'mongol peo rep':  'mongolia',
+            'neth antilles':   'saint martin',
+            'north ireland':   'ireland',
+            'peoples r china': 'china',
+            'rep of georgia':  'georgia',
+            'russia':          'russian federation',
+            'sao tome e prin': 'sao tome and principe',
+            'scotland':        'united kingdom',
+            'st kitts & nevi': 'saint kitts and nevis',
+            'trinid & tobago': 'trinidad and tobago',
+            'u arab emirates': 'united arab emirates',
+            'usa':             'united states of america',
+            'vietnam':         'viet nam',
+        }
+        data = chunk.copy(deep = True)
+        def preprocess_affiliation(row):
+            source = row['source'].lower()
+            if (source in ['scopus', 'pubmed']):
+                return row['affiliation']
+            elif (source == 'wos'):
+                aff = row['affiliation_'].replace('(Corresponding Author)', '')
+                return aff.replace(',', ', ') if ',' in aff and ', ' not in aff else aff
+            return 'UNKNOWN'
+        data['processed_affiliation'] = data.apply(preprocess_affiliation, axis = 1).str.lower()
+        data['processed_affiliation'] = data['processed_affiliation'].replace('united states of america', 'usa', regex = True)
+        data['processed_affiliation'] = data['processed_affiliation'].replace('united states', 'usa', regex = True)
+        data['processed_affiliation'] = data['processed_affiliation'].replace(country_replacements, regex = True)
+        rows   = []
+        unique = set()
+        for local_i, (_, row) in enumerate(data.iterrows()):
+            affiliations = row['processed_affiliation'].split(';')
+            authors      = authors_chunk[local_i] if local_i < len(authors_chunk) else []
+            row_countries = []
+            for author in authors:
+                detected_country = 'UNKNOWN'
+                for aff in affiliations:
+                    for country in self.country_names:
+                        if (country.lower() in aff and author in aff):
+                            detected_country = country
+                            break
+                    if (detected_country != 'UNKNOWN'):
+                        break
+                row_countries.append(detected_country)
+                unique.add(detected_country)
+            rows.append(row_countries)
+        return rows, sorted(unique)
+
+    def _extract_institutions_chunk(self, chunk, authors_chunk, _row_offset = 0):
+        """Return (rows, unique) of institutions for a single chunk.
+
+        ``_row_offset`` is accepted for API symmetry with
+        ``_extract_countries_chunk`` and is reserved for future
+        row-aware logic (e.g. emitting (global_row_index, value)
+        tuples directly during streaming). Currently unused.
+        """
+        def extract_top_institution_with_priority(text, institution_names):
+            segments              = text.split(';')
+            selected_institutions = []
+            for segment in segments:
+                segment   = segment.strip().lower()
+                sub_parts = segment.split(',')
+                matches   = [ (part.strip(), self.inst_priority.get(keyword, 0)) for part in sub_parts for keyword in self.inst_priority.keys() if keyword in part ]
+                if (matches):
+                    matches.sort(key = lambda x: (-x[1], -len(x[0])))
+                    selected_institutions.append(matches[0][0])
+                else:
+                    selected_institutions.append('UNKNOWN')
+            return selected_institutions
+        sources = chunk['source'].str.lower()
+        if 'affiliation' in chunk.columns:
+            affiliations = chunk['affiliation'].fillna('').str.lower()
+        else:
+            affiliations = pd.Series([''] * len(chunk), index = chunk.index)
+        if 'affiliation_' in chunk.columns:
+            affiliations_wos = chunk['affiliation_'].fillna('').str.lower()
+        else:
+            affiliations_wos = pd.Series([''] * len(chunk), index = chunk.index)
+        processed_affiliations = np.where(
+            sources.isin(['scopus', 'pubmed']),
+            affiliations,
+            np.where(sources == 'wos', affiliations_wos, 'UNKNOWN')
+        )
+        processed_affiliations = pd.Series(processed_affiliations, index = chunk.index)
+        top_institutions       = processed_affiliations.apply(lambda row: extract_top_institution_with_priority(row, self.institution_names))
+        rows = []
+        unique = set()
+        for local_i, (_, top_inst) in enumerate(top_institutions.items()):
+            authors = authors_chunk[local_i] if local_i < len(authors_chunk) else []
+            row_inst = []
+            aff_str  = processed_affiliations.iloc[local_i]
+            for author in authors:
+                aff_list = []
+                for institution in top_inst:
+                    for aff in aff_str.split(';'):
+                        if (author in aff and institution in aff):
+                            aff_list.append(re.sub(r'^(?:[A-Za-z]\.\s?)+', '', institution))
+                            break
+                aff = aff_list[0] if aff_list else 'UNKNOWN'
+                aff = re.sub(r'^(?:[A-Za-z]\.\s?)+', '', aff)
+                row_inst.append(aff)
+                unique.add(aff)
+            rows.append(row_inst)
+        return rows, sorted(unique)
+
+    # ----------------------------------------------------------------
     
     # Function: Document ID
     def __id_document(self):
@@ -1016,22 +1614,16 @@ class pbx_probe():
         print('Added Database')
         print('')
         data, _    = self.__read_bib(file_bib, db, del_duplicated)
-        self.data  = pd.concat([self.data, data]) 
+        self.data  = pd.concat([self.data, data])
         self.data  = self.data.reset_index(drop = True)
         self.data  = self.data.fillna('UNKNOWN')
-        duplicated = self.data['doi'].duplicated()
-        title      = self.data['title']
-        title      = title.to_list()
-        title      = self.clear_text(title, stop_words  = [], lowercase = True, rmv_accents = True, rmv_special_chars = True, rmv_numbers = True, rmv_custom_words = [])
-        t_dupl     = pd.Series(title).duplicated()
-        for i in range(0, duplicated.shape[0]):
-            if (self.data.loc[i, 'doi'] == 'UNKNOWN'):
-                duplicated[i] = False
-            if (t_dupl[i] == True):
-                duplicated[i] = True
-        idx        = list(duplicated.index[duplicated])
-        self.data.drop(idx, axis = 0, inplace = True)
-        self.data  = self.data.reset_index(drop = True)
+        if self._should_batch(self.data, op = 'merge_database'):
+            idx = self._dedup_indices_batch(self.data)
+        else:
+            idx = self._dedup_indices_full(self.data)
+        if idx:
+            self.data.drop(idx, axis = 0, inplace = True)
+            self.data = self.data.reset_index(drop = True)
         size       = self.data.shape[0]
         self.__make_bib(verbose = True)
         dt         = self.data['document_type'].value_counts()
@@ -1051,6 +1643,70 @@ class pbx_probe():
         print('')
         print('############################################################################')
         return
+
+    # Helper: build (doi_key, title_key) for a chunk. The keys preserve
+    # the small-path semantics: cleaned title using clear_text with
+    # the same arguments, and DOI as-is.
+    def _build_dedup_keys_chunk(self, chunk):
+        title_list = chunk['title'].tolist()
+        title_list = self.clear_text(
+            title_list,
+            stop_words        = [],
+            lowercase         = True,
+            rmv_accents       = True,
+            rmv_special_chars = True,
+            rmv_numbers       = True,
+            rmv_custom_words  = [],
+        )
+        doi_list = chunk['doi'].tolist()
+        return doi_list, title_list
+
+    # Full-data dedup (small path) — preserves the original behavior
+    # exactly: a row is dropped if (a) its DOI is duplicated and the
+    # DOI is not 'UNKNOWN', OR (b) its cleaned title is duplicated.
+    def _dedup_indices_full(self, df):
+        duplicated = df['doi'].duplicated()
+        title      = df['title'].tolist()
+        title      = self.clear_text(title, stop_words = [], lowercase = True, rmv_accents = True, rmv_special_chars = True, rmv_numbers = True, rmv_custom_words = [])
+        t_dupl     = pd.Series(title).duplicated()
+        for i in range(0, duplicated.shape[0]):
+            if (df.loc[i, 'doi'] == 'UNKNOWN'):
+                duplicated[i] = False
+            if (t_dupl[i] == True):
+                duplicated[i] = True
+        return list(duplicated.index[duplicated])
+
+    # Chunked dedup — same semantics as _dedup_indices_full but built
+    # by streaming. Maintains seen_doi and seen_title sets and emits
+    # row indices to drop in the order they are encountered.
+    def _dedup_indices_batch(self, df):
+        chunk_size = self._get_chunk_size('dedup')
+        if getattr(self.batch_config, 'verbose', False):
+            print(f'[pybibx batch] _dedup_indices_batch: rows={len(df)}, chunk_size={chunk_size}')
+        seen_doi   = set()
+        seen_title = set()
+        rows_to_drop = []
+        global_offset = 0
+        for chunk in chunk_dataframe(df, chunk_size):
+            doi_keys, title_keys = self._build_dedup_keys_chunk(chunk)
+            n = len(chunk)
+            for local_i in range(0, n):
+                global_i = global_offset + local_i
+                doi   = doi_keys[local_i]
+                title = title_keys[local_i]
+                drop  = False
+                if (doi != 'UNKNOWN') and (doi in seen_doi):
+                    drop = True
+                elif (title in seen_title):
+                    drop = True
+                if drop:
+                    rows_to_drop.append(global_i)
+                else:
+                    if (doi != 'UNKNOWN'):
+                        seen_doi.add(doi)
+                    seen_title.add(title)
+            global_offset += n
+        return rows_to_drop
 
     # Function: Save Working Database
     def save_database(self, sep = '\t', name = 'data.csv'):
@@ -1724,22 +2380,12 @@ class pbx_probe():
     
     # Function: Get Entries
     def __get_str(self, entry = 'references', s = ';', lower = True, sorting = True):
-        #----------------------------------------------------------------------
-               
-        def is_year_parentheses(ref):
-            cleaned = re.sub(r'^[\s,;:.()\[\]{}]+|[\s,;:.()\[\]{}]+$', '', ref)
-            return bool(re.fullmatch(r'\d{4}', cleaned))
-        
-        #----------------------------------------------------------------------
-        
-        column      = self.data[entry]
-        if entry != 'references':
-            info = [ [ ' '.join(item.split()).lower() if lower else ' '.join(item.split()) for item in e.split(s) if item.strip() and item.strip() != 'note' ] if isinstance(e, str) else [] for e in column ]
-        else:
-            info = [ [ (' '.join(item.split()).lower() if lower else ' '.join(item.split())) for item in e.split(s) if item.strip() and item.strip() != 'note' and not is_year_parentheses(item) ] if isinstance(e, str) else [] for e in column ]
-        unique_info = list({item for sublist in info for item in sublist})
-        if ('' in unique_info):
-            unique_info.remove('')
+        info, unique_info = self._split_multivalue_series_chunk(
+            self.data[entry],
+            sep          = s,
+            lower        = lower,
+            is_reference = (entry == 'references'),
+        )
         if (sorting == True):
             unique_info.sort()
         return info, unique_info
@@ -3958,11 +4604,126 @@ class pbx_probe():
 
     # Function: Text Pre-Processing
     def clear_text(self, corpus, stop_words = ['en'], lowercase = True, rmv_accents = True, rmv_special_chars = True, rmv_numbers = True, rmv_custom_words = [], verbose = False):
+        # Materialize once so the chunked path receives a list (safe to
+        # slice). NaN values are NOT coerced here — that preserves the
+        # original semantics where lowercase=True turns NaN into 'nan'
+        # via str(x) inside the chunk worker.
+        if not isinstance(corpus, list):
+            corpus = list(corpus)
+        sw_full = self._resolve_stopwords(stop_words)
+        if not self._should_batch(pd.DataFrame({'text': corpus}), op = 'clear_text'):
+            return self._clear_text_chunk(
+                corpus,
+                sw_full           = sw_full,
+                lowercase         = lowercase,
+                rmv_accents       = rmv_accents,
+                rmv_special_chars = rmv_special_chars,
+                rmv_numbers       = rmv_numbers,
+                rmv_custom_words  = rmv_custom_words,
+                verbose           = verbose,
+            )
+        out = []
+        chunk_size = self._get_chunk_size('clear_text')
+        if getattr(self.batch_config, 'verbose', False):
+            print(f'[pybibx batch] clear_text: texts={len(corpus)}, chunk_size={chunk_size}')
+        for chunk in chunk_list(corpus, chunk_size):
+            out.extend(
+                self._clear_text_chunk(
+                    list(chunk),
+                    sw_full           = sw_full,
+                    lowercase         = lowercase,
+                    rmv_accents       = rmv_accents,
+                    rmv_special_chars = rmv_special_chars,
+                    rmv_numbers       = rmv_numbers,
+                    rmv_custom_words  = rmv_custom_words,
+                    verbose           = verbose,
+                )
+            )
+        return out
+
+    # Resolve the stopword list once per call (so chunked invocations
+    # don't pay the file IO cost per chunk).
+    def _resolve_stopwords(self, stop_words):
         sw_full = []
+        if (len(stop_words) == 0):
+            return sw_full
+        for sw_ in stop_words:
+            if   (sw_ == 'ar' or sw_ == 'ara' or sw_ == 'arabic'):
+                name = 'Stopwords-Arabic.txt'
+            elif (sw_ == 'bn' or sw_ == 'ben' or sw_ == 'bengali'):
+                name = 'Stopwords-Bengali.txt'
+            elif (sw_ == 'bg' or sw_ == 'bul' or sw_ == 'bulgarian'):
+                name = 'Stopwords-Bulgarian.txt'
+            elif (sw_ == 'zh' or sw_ == 'chi' or sw_ == 'chinese'):
+                name = 'Stopwords-Chinese.txt'
+            elif (sw_ == 'cs' or sw_ == 'cze' or sw_ == 'ces' or sw_ == 'czech'):
+                name = 'Stopwords-Czech.txt'
+            elif (sw_ == 'en' or sw_ == 'eng' or sw_ == 'english'):
+                name = 'Stopwords-English.txt'
+            elif (sw_ == 'fi' or sw_ == 'fin' or sw_ == 'finnish'):
+                name = 'Stopwords-Finnish.txt'
+            elif (sw_ == 'fr' or sw_ == 'fre' or sw_ == 'fra' or sw_ == 'french'):
+                name = 'Stopwords-French.txt'
+            elif (sw_ == 'de' or sw_ == 'ger' or sw_ == 'deu' or sw_ == 'german'):
+                name = 'Stopwords-German.txt'
+            elif (sw_ == 'el' or sw_ == 'gre' or sw_ == 'greek'):
+                name = 'Stopwords-Greek.txt'
+            elif (sw_ == 'he' or sw_ == 'heb' or sw_ == 'hebrew'):
+                name = 'Stopwords-Hebrew.txt'
+            elif (sw_ == 'hi' or sw_ == 'hin' or sw_ == 'hind'):
+                name = 'Stopwords-Hindi.txt'
+            elif (sw_ == 'hu' or sw_ == 'hun' or sw_ == 'hungarian'):
+                name = 'Stopwords-Hungarian.txt'
+            elif (sw_ == 'it' or sw_ == 'ita' or sw_ == 'italian'):
+                name = 'Stopwords-Italian.txt'
+            elif (sw_ == 'ja' or sw_ == 'jpn' or sw_ == 'japanese'):
+                name = 'Stopwords-Japanese.txt'
+            elif (sw_ == 'ko' or sw_ == 'kor' or sw_ == 'korean'):
+                name = 'Stopwords-Korean.txt'
+            elif (sw_ == 'mr' or sw_ == 'mar' or sw_ == 'marathi'):
+                name = 'Stopwords-Marathi.txt'
+            elif (sw_ == 'fa' or sw_ == 'per' or sw_ == 'fas' or sw_ == 'persian'):
+                name = 'Stopwords-Persian.txt'
+            elif (sw_ == 'pl' or sw_ == 'pol' or sw_ == 'polish'):
+                name = 'Stopwords-Polish.txt'
+            elif (sw_ == 'pt-br' or sw_ == 'por-br' or sw_ == 'portuguese-br'):
+                name = 'Stopwords-Portuguese-br.txt'
+            elif (sw_ == 'ro' or sw_ == 'rum' or sw_ == 'ron' or sw_ == 'romanian'):
+                name = 'Stopwords-Romanian.txt'
+            elif (sw_ == 'ru' or sw_ == 'rus' or sw_ == 'russian'):
+                name = 'Stopwords-Russian.txt'
+            elif (sw_ == 'sk' or sw_ == 'slo' or sw_ == 'slovak'):
+                name = 'Stopwords-Slovak.txt'
+            elif (sw_ == 'es' or sw_ == 'spa' or sw_ == 'spanish'):
+                name = 'Stopwords-Spanish.txt'
+            elif (sw_ == 'sv' or sw_ == 'swe' or sw_ == 'swedish'):
+                name = 'Stopwords-Swedish.txt'
+            elif (sw_ == 'th' or sw_ == 'tha' or sw_ == 'thai'):
+                name = 'Stopwords-Thai.txt'
+            elif (sw_ == 'uk' or sw_ == 'ukr' or sw_ == 'ukrainian'):
+                name = 'Stopwords-Ukrainian.txt'
+            else:
+                continue
+            with pkg_resources.open_binary(stws, name) as file:
+                raw_data = file.read()
+            result   = chardet.detect(raw_data)
+            encoding = result['encoding']
+            with pkg_resources.open_text(stws, name, encoding = encoding) as file:
+                content = file.read().split('\n')
+            content = [line.rstrip('\r').rstrip('\n') for line in content]
+            sw      = list(filter(None, content))
+            sw_full.extend(sw)
+        return sw_full
+
+    # Per-chunk text cleaner. ``sw_full`` is the resolved stopword
+    # list, computed once by the dispatcher.
+    def _clear_text_chunk(self, corpus, sw_full = None, lowercase = True, rmv_accents = True, rmv_special_chars = True, rmv_numbers = True, rmv_custom_words = [], verbose = False):
+        if sw_full is None:
+            sw_full = []
         if (lowercase == True):
             if (verbose == True):
                 print('Lower Case: Working...')
-            corpus = [str(x).lower().replace("’","'") for x in  corpus]
+            corpus = [str(x).lower().replace("\u2019","'") for x in corpus]
             if (verbose == True):
                 print('Lower Case: Done!')
         if (rmv_special_chars == True):
@@ -3971,90 +4732,26 @@ class pbx_probe():
             corpus = [re.sub(r"[^a-zA-Z0-9']+", ' ', i) for i in corpus]
             if (verbose == True):
                 print('Removing Special Characters: Done!')
-        if (len(stop_words) > 0):
-            for sw_ in stop_words: 
-                if   (sw_ == 'ar' or sw_ == 'ara' or sw_ == 'arabic'):
-                    name = 'Stopwords-Arabic.txt'
-                elif (sw_ == 'bn' or sw_ == 'ben' or sw_ == 'bengali'):
-                    name = 'Stopwords-Bengali.txt'
-                elif (sw_ == 'bg' or sw_ == 'bul' or sw_ == 'bulgarian'):
-                    name = 'Stopwords-Bulgarian.txt'
-                elif (sw_ == 'zh' or sw_ == 'chi' or sw_ == 'chinese'):
-                    name = 'Stopwords-Chinese.txt'
-                elif (sw_ == 'cs' or sw_ == 'cze' or sw_ == 'ces' or sw_ == 'czech'):
-                    name = 'Stopwords-Czech.txt'
-                elif (sw_ == 'en' or sw_ == 'eng' or sw_ == 'english'):
-                    name = 'Stopwords-English.txt'
-                elif (sw_ == 'fi' or sw_ == 'fin' or sw_ == 'finnish'):
-                    name = 'Stopwords-Finnish.txt'
-                elif (sw_ == 'fr' or sw_ == 'fre' or sw_ == 'fra' or sw_ == 'french'):
-                    name = 'Stopwords-French.txt'
-                elif (sw_ == 'de' or sw_ == 'ger' or sw_ == 'deu' or sw_ == 'german'):
-                    name = 'Stopwords-German.txt'
-                elif (sw_ == 'el' or sw_ == 'gre' or sw_ == 'greek'):
-                    name = 'Stopwords-Greek.txt'
-                elif (sw_ == 'he' or sw_ == 'heb' or sw_ == 'hebrew'):
-                    name = 'Stopwords-Hebrew.txt'
-                elif (sw_ == 'hi' or sw_ == 'hin' or sw_ == 'hind'):
-                    name = 'Stopwords-Hindi.txt'
-                elif (sw_ == 'hu' or sw_ == 'hun' or sw_ == 'hungarian'):
-                    name = 'Stopwords-Hungarian.txt'
-                elif (sw_ == 'it' or sw_ == 'ita' or sw_ == 'italian'):
-                    name = 'Stopwords-Italian.txt'
-                elif (sw_ == 'ja' or sw_ == 'jpn' or sw_ == 'japanese'):
-                    name = 'Stopwords-Japanese.txt'
-                elif (sw_ == 'ko' or sw_ == 'kor' or sw_ == 'korean'):
-                    name = 'Stopwords-Korean.txt'
-                elif (sw_ == 'mr' or sw_ == 'mar' or sw_ == 'marathi'):
-                    name = 'Stopwords-Marathi.txt'
-                elif (sw_ == 'fa' or sw_ == 'per' or sw_ == 'fas' or sw_ == 'persian'):
-                    name = 'Stopwords-Persian.txt'
-                elif (sw_ == 'pl' or sw_ == 'pol' or sw_ == 'polish'):
-                    name = 'Stopwords-Polish.txt'
-                elif (sw_ == 'pt-br' or sw_ == 'por-br' or sw_ == 'portuguese-br'):
-                    name = 'Stopwords-Portuguese-br.txt'
-                elif (sw_ == 'ro' or sw_ == 'rum' or sw_ == 'ron' or sw_ == 'romanian'):
-                    name = 'Stopwords-Romanian.txt'
-                elif (sw_ == 'ru' or sw_ == 'rus' or sw_ == 'russian'):
-                    name = 'Stopwords-Russian.txt'
-                elif (sw_ == 'sk' or sw_ == 'slo' or sw_ == 'slovak'):
-                    name = 'Stopwords-Slovak.txt'
-                elif (sw_ == 'es' or sw_ == 'spa' or sw_ == 'spanish'):
-                    name = 'Stopwords-Spanish.txt'
-                elif (sw_ == 'sv' or sw_ == 'swe' or sw_ == 'swedish'):
-                    name = 'Stopwords-Swedish.txt'
-                elif (sw_ == 'th' or sw_ == 'tha' or sw_ == 'thai'):
-                    name = 'Stopwords-Thai.txt'
-                elif (sw_ == 'uk' or sw_ == 'ukr' or sw_ == 'ukrainian'):
-                    name = 'Stopwords-Ukrainian.txt'
-                with pkg_resources.open_binary(stws, name) as file:
-                    raw_data = file.read()
-                result   = chardet.detect(raw_data)
-                encoding = result['encoding']
-                with pkg_resources.open_text(stws, name, encoding = encoding) as file:
-                    content = file.read().split('\n')
-                content = [line.rstrip('\r').rstrip('\n') for line in content]
-                sw      = list(filter(None, content))
-                sw_full.extend(sw)
+        if (len(sw_full) > 0):
             if (verbose == True):
                 print('Removing Stopwords: Working...')
             for i in range(0, len(corpus)):
-               text      = corpus[i].split()
-               text      = [x.replace(' ', '') for x in text if x.replace(' ', '') not in sw_full]
-               corpus[i] = ' '.join(text) 
-               if (verbose == True):
-                   print('Removing Stopwords: ' + str(i + 1) +  ' of ' + str(len(corpus)) )
+                text      = corpus[i].split()
+                text      = [x.replace(' ', '') for x in text if x.replace(' ', '') not in sw_full]
+                corpus[i] = ' '.join(text)
+                if (verbose == True):
+                    print('Removing Stopwords: ' + str(i + 1) + ' of ' + str(len(corpus)))
             if (verbose == True):
                 print('Removing Stopwords: Done!')
         if (len(rmv_custom_words) > 0):
             if (verbose == True):
                 print('Removing Custom Words: Working...')
             for i in range(0, len(corpus)):
-               text      = corpus[i].split()
-               text      = [x.replace(' ', '') for x in text if x.replace(' ', '') not in rmv_custom_words]
-               corpus[i] = ' '.join(text) 
-               if (verbose == True):
-                   print('Removing Custom Words: ' + str(i + 1) +  ' of ' + str(len(corpus)) )
+                text      = corpus[i].split()
+                text      = [x.replace(' ', '') for x in text if x.replace(' ', '') not in rmv_custom_words]
+                corpus[i] = ' '.join(text)
+                if (verbose == True):
+                    print('Removing Custom Words: ' + str(i + 1) + ' of ' + str(len(corpus)))
             if (verbose == True):
                 print('Removing Custom Word: Done!')
         if (rmv_accents == True):
@@ -4064,17 +4761,16 @@ class pbx_probe():
                 text = corpus[i]
                 try:
                     text = unicode(text, 'utf-8')
-                except NameError: 
+                except NameError:
                     pass
                 text      = unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode('utf-8')
                 corpus[i] = str(text)
             if (verbose == True):
                 print('Removing Accents: Done!')
-        # Remove Numbers
         if (rmv_numbers == True):
             if (verbose == True):
                 print('Removing Numbers: Working...')
-            corpus = [re.sub('[0-9]', ' ', i) for i in corpus] 
+            corpus = [re.sub('[0-9]', ' ', i) for i in corpus]
             if (verbose == True):
                 print('Removing Numbers: Done!')
         for i in range(0, len(corpus)):
@@ -4082,17 +4778,49 @@ class pbx_probe():
         return corpus
 
     # Function: TF-IDF
-    def dtm_tf_idf(self, corpus):
+    def dtm_tf_idf(self, corpus, return_type = 'auto'):
+        """Compute TF-IDF for ``corpus``.
+
+        Parameters
+        ----------
+        corpus : sequence of str
+        return_type : str
+            - 'dense': always return the dense pandas DataFrame
+              (legacy behavior, may be very expensive on large corpora).
+            - 'sparse': return ``(sparse_matrix, tokens)``.
+            - 'auto' (default): dense DataFrame if the corpus has at
+              most ``self.batch_config.tfidf_dense_limit_rows`` rows;
+              otherwise sparse.
+        """
         vectorizer = TfidfVectorizer(norm = 'l2')
         tf_idf     = vectorizer.fit_transform(corpus)
         try:
             tokens = vectorizer.get_feature_names_out()
-        except:
+        except Exception:
             tokens = vectorizer.get_feature_names()
-        values     = tf_idf.todense()
-        values     = values.tolist()
-        dtm        = pd.DataFrame(values, columns = tokens)
-        return dtm
+        rt = (return_type or 'auto').lower()
+        if rt == 'sparse':
+            return tf_idf, tokens
+        if rt == 'dense':
+            try:
+                values = tf_idf.toarray()
+            except Exception:
+                values = np.asarray(tf_idf.todense())
+            return pd.DataFrame(values, columns = tokens)
+        # 'auto'
+        try:
+            n_rows = tf_idf.shape[0]
+        except Exception:
+            n_rows = len(corpus)
+        cfg = getattr(self, 'batch_config', None)
+        limit = int(getattr(cfg, 'tfidf_dense_limit_rows', 5000)) if cfg is not None else 5000
+        if n_rows > limit:
+            return tf_idf, tokens
+        try:
+            values = tf_idf.toarray()
+        except Exception:
+            values = np.asarray(tf_idf.todense())
+        return pd.DataFrame(values, columns = tokens)
    
     # Function: Projection
     def docs_projection(self, view = 'browser', corpus_type = 'abs', stop_words = ['en'], rmv_custom_words = [], custom_label = [], custom_projection = [], n_components = 2, n_clusters = 5, node_labels = True, node_size = 25, node_font_size = 10, tf_idf = True, embeddings = False, method = 'tsvd', model = 'allenai/scibert_scivocab_uncased', showlegend = False, cluster_method = 'kmeans', min_size = 5, max_size = 15):
@@ -4119,12 +4847,12 @@ class pbx_probe():
             SentenceTransformer = _get_sentence_transformer()
             _require_dependency(SentenceTransformer, 'sentence-transformers', 'document projection with embeddings')
             model = SentenceTransformer(model) # 'allenai/scibert_scivocab_uncased'; 'all-MiniLM-L6-v2'
-            embds = model.encode([str(item) for item in corpus])
+            embds = self._encode_embeddings_chunked(model, [str(item) for item in corpus])
         non_empty_docs = [item for item in corpus if str(item).strip()]
         if len(non_empty_docs) == 0:
             raise ValueError('Projection corpus is empty after preprocessing. Choose another corpus or remove some stopwords.')
         try:
-            dtm = self.dtm_tf_idf(corpus)
+            X_tfidf, _tokens = self.dtm_tf_idf(corpus, return_type = 'sparse')
         except ValueError as e:
             if 'empty vocabulary' in str(e).lower():
                 raise ValueError('Projection corpus is empty after preprocessing. Choose another corpus or remove some stopwords.')
@@ -4138,8 +4866,19 @@ class pbx_probe():
             decomposition = TSNE(n_components = n_components, random_state = 1001, init = 'pca', learning_rate = 'auto')
         else:
             decomposition = tsvd(n_components = n_components, random_state = 1001)
+        # UMAP / TSNE typically need dense input; TruncatedSVD handles
+        # sparse natively. Densify only when the chosen decomposition
+        # cannot consume sparse matrices.
+        method_l = method.lower()
+        if method_l in ('umap', 'tsne'):
+            try:
+                X_for_decomp = X_tfidf.toarray()
+            except Exception:
+                X_for_decomp = np.asarray(X_tfidf)
+        else:
+            X_for_decomp = X_tfidf
         if (len(custom_projection) == 0 and embeddings == False):
-            transformed = decomposition.fit_transform(dtm)
+            transformed = decomposition.fit_transform(X_for_decomp)
         elif (len(custom_projection) == 0 and embeddings == True):
             transformed = decomposition.fit_transform(embds)
         elif (custom_projection.shape[0] == self.data.shape[0] and custom_projection.shape[1] >= 2):
@@ -4148,7 +4887,8 @@ class pbx_probe():
             if cluster_method == 'kmeans':
                 cluster = KMeans(n_clusters = n_clusters, init = 'k-means++', n_init = 100, max_iter = 10, random_state = 1001)
                 if (tf_idf == True and embeddings == False):
-                    cluster.fit(dtm)
+                    # KMeans accepts sparse input.
+                    cluster.fit(X_tfidf)
                 else:
                     cluster.fit(transformed)
                 labels  = cluster.labels_
@@ -4157,7 +4897,12 @@ class pbx_probe():
                 _require_dependency(HDBSCAN, 'hdbscan', 'HDBSCAN clustering')
                 cluster = HDBSCAN(min_cluster_size = min_size, max_cluster_size = max_size)
                 if (tf_idf == True and embeddings == False):
-                    cluster.fit(dtm)
+                    # HDBSCAN tends to require dense input; only
+                    # densify here when really clustering on TF-IDF.
+                    try:
+                        cluster.fit(X_tfidf.toarray())
+                    except Exception:
+                        cluster.fit(X_tfidf)
                 else:
                     cluster.fit(transformed)
                 labels  = cluster.labels_
@@ -6236,7 +6981,378 @@ class pbx_probe():
 
 ############################################################################
 
+    # Helper: matched internal reference document IDs for each paper
+    def _internal_reference_doc_ids(self):
+        cache_name = '_internal_reference_doc_ids_cache'
+        if hasattr(self, cache_name) and getattr(self, cache_name) is not None:
+            return getattr(self, cache_name)
+        internal_refs = []
+        for refs in getattr(self, 'ref_id', []):
+            ids = []
+            for ref in refs:
+                ref_str = str(ref).strip()
+                if (ref_str == '' or ref_str.lower().startswith('r_')):
+                    continue
+                try:
+                    ref_idx = int(ref_str)
+                except Exception:
+                    continue
+                if (0 <= ref_idx < self.data.shape[0]):
+                    ids.append(ref_idx)
+            internal_refs.append(sorted(set(ids)))
+        setattr(self, cache_name, internal_refs)
+        return internal_refs
+
+    # Helper: local citation edges (citing -> cited) using only matched internal references
+    def _local_citation_edges(self, strict_year = True):
+        years = pd.to_numeric(self.data['year'], errors = 'coerce').fillna(-1).astype(int).tolist()
+        citations = []
+        internal_refs = self._internal_reference_doc_ids()
+        for src_idx, refs in enumerate(internal_refs):
+            src_year = years[src_idx] if src_idx < len(years) else -1
+            for tgt_idx in refs:
+                if (src_idx == tgt_idx or tgt_idx < 0 or tgt_idx >= len(years)):
+                    continue
+                tgt_year = years[tgt_idx]
+                if (strict_year == True and src_year <= tgt_year):
+                    continue
+                if (strict_year == False and src_year < tgt_year):
+                    continue
+                citations.append((src_idx, tgt_idx))
+        return citations
+
+    # Helper: compact paper metadata record
+    def _paper_metadata(self, idx):
+        idx = int(idx)
+        row = self.data.iloc[idx]
+        year_val = pd.to_numeric(row.get('year', np.nan), errors = 'coerce')
+        year_val = int(year_val) if pd.notna(year_val) else None
+        return {
+            'paper_id': str(idx),
+            'year': year_val,
+            'author': row.get('author', 'UNKNOWN'),
+            'title': row.get('title', 'UNKNOWN'),
+            'journal': row.get('journal', row.get('abbrev_source_title', 'UNKNOWN')),
+            'doi': row.get('doi', 'UNKNOWN'),
+        }
+
+    # Function: Main Path Analysis (SPC / SPLC / SPNP)
+    def main_path_analysis(self, method = 'spc', min_path_size = 2, strict_year = True):
+        method = str(method).lower().strip()
+        valid_methods = {'spc', 'splc', 'spnp'}
+        if (method not in valid_methods):
+            raise ValueError("method must be one of: 'spc', 'splc', 'spnp'")
+        citations = self._local_citation_edges(strict_year = strict_year)
+        if (len(citations) == 0):
+            empty_edges = pd.DataFrame(columns = ['Source', 'Target', 'Traversal Weight'])
+            empty_path  = pd.DataFrame(columns = ['Step', 'Paper ID', 'Year', 'Author', 'Title', 'Journal', 'DOI', 'Incoming Edge Weight'])
+            results = {
+                'method': method,
+                'knowledge_flow_edges': [],
+                'path': [],
+                'edge_weights': empty_edges,
+                'path_table': empty_path,
+            }
+            self.main_path_results = results
+            return results
+
+        # Knowledge flow goes from cited -> citing (older -> newer)
+        flow_edges = [(tgt, src) for (src, tgt) in citations if src != tgt]
+        G = nx.DiGraph()
+        G.add_edges_from(flow_edges)
+        active_nodes = [node for node in G.nodes() if G.degree(node) > 0]
+        G = G.subgraph(active_nodes).copy()
+        if (G.number_of_edges() == 0):
+            empty_edges = pd.DataFrame(columns = ['Source', 'Target', 'Traversal Weight'])
+            empty_path  = pd.DataFrame(columns = ['Step', 'Paper ID', 'Year', 'Author', 'Title', 'Journal', 'DOI', 'Incoming Edge Weight'])
+            results = {
+                'method': method,
+                'knowledge_flow_edges': flow_edges,
+                'path': [],
+                'edge_weights': empty_edges,
+                'path_table': empty_path,
+            }
+            self.main_path_results = results
+            return results
+
+        # Safety fallback in the unlikely case of residual cycles
+        if (nx.is_directed_acyclic_graph(G) == False):
+            years = pd.to_numeric(self.data['year'], errors = 'coerce').fillna(-1).astype(int).tolist()
+            cycle_edges_to_drop = []
+            for u, v in list(G.edges()):
+                if (years[u] >= years[v]):
+                    cycle_edges_to_drop.append((u, v))
+            if (len(cycle_edges_to_drop) > 0):
+                G.remove_edges_from(cycle_edges_to_drop)
+            if (nx.is_directed_acyclic_graph(G) == False):
+                G = nx.DiGraph([(u, v) for (u, v) in G.edges() if u < v])
+
+        topo = list(nx.topological_sort(G))
+        sources = [node for node in topo if G.in_degree(node) == 0]
+        sinks   = [node for node in topo if G.out_degree(node) == 0]
+
+        source_paths = {node: 0.0 for node in topo}
+        for s in sources:
+            source_paths[s] = 1.0
+        for u in topo:
+            for v in G.successors(u):
+                source_paths[v] = source_paths.get(v, 0.0) + source_paths[u]
+
+        sink_paths = {node: 0.0 for node in topo}
+        for s in sinks:
+            sink_paths[s] = 1.0
+        for u in reversed(topo):
+            for v in G.successors(u):
+                sink_paths[u] = sink_paths.get(u, 0.0) + sink_paths[v]
+
+        local_predecessor_paths = {node: 1.0 for node in topo}
+        for u in topo:
+            for v in G.successors(u):
+                local_predecessor_paths[v] = local_predecessor_paths.get(v, 1.0) + local_predecessor_paths[u]
+
+        ancestor_counts = {node: 1 for node in topo}
+        ancestor_sets = {node: {node} for node in topo}
+        for u in topo:
+            for v in G.successors(u):
+                merged = ancestor_sets.get(v, {v}) | ancestor_sets[u]
+                if (len(merged) != len(ancestor_sets.get(v, {v}))):
+                    ancestor_sets[v] = merged
+                    ancestor_counts[v] = len(merged)
+
+        descendant_counts = {node: 1 for node in topo}
+        descendant_sets = {node: {node} for node in topo}
+        for u in reversed(topo):
+            for v in G.successors(u):
+                merged = descendant_sets.get(u, {u}) | descendant_sets[v]
+                if (len(merged) != len(descendant_sets.get(u, {u}))):
+                    descendant_sets[u] = merged
+                    descendant_counts[u] = len(merged)
+
+        edge_weights = {}
+        for u, v in G.edges():
+            if (method == 'spc'):
+                weight = source_paths.get(u, 0.0) * sink_paths.get(v, 0.0)
+            elif (method == 'splc'):
+                weight = local_predecessor_paths.get(u, 1.0) * sink_paths.get(v, 0.0)
+            else:  # spnp
+                weight = float(ancestor_counts.get(u, 1) * descendant_counts.get(v, 1))
+            edge_weights[(u, v)] = float(weight)
+
+        best_score = {node: -np.inf for node in topo}
+        prev_node  = {node: None for node in topo}
+        for s in sources:
+            best_score[s] = 0.0
+        for u in topo:
+            for v in G.successors(u):
+                cand = best_score[u] + edge_weights[(u, v)]
+                if (cand > best_score[v]):
+                    best_score[v] = cand
+                    prev_node[v]  = u
+
+        end_node = None
+        if (len(sinks) > 0):
+            end_node = max(sinks, key = lambda node: best_score.get(node, -np.inf))
+        elif (len(topo) > 0):
+            end_node = max(topo, key = lambda node: best_score.get(node, -np.inf))
+
+        path = []
+        while (end_node is not None):
+            path.append(end_node)
+            end_node = prev_node.get(end_node)
+        path = list(reversed(path))
+        if (len(path) < min_path_size):
+            path = []
+
+        edges_table = []
+        for (u, v), w in sorted(edge_weights.items(), key = lambda item: item[1], reverse = True):
+            edges_table.append({
+                'Source': str(u),
+                'Target': str(v),
+                'Traversal Weight': float(w),
+            })
+        edges_table = pd.DataFrame(edges_table)
+
+        path_rows = []
+        for step, node in enumerate(path, start = 1):
+            meta = self._paper_metadata(node)
+            incoming_weight = np.nan
+            if (step > 1):
+                incoming_weight = edge_weights.get((path[step-2], node), np.nan)
+            path_rows.append({
+                'Step': step,
+                'Paper ID': meta['paper_id'],
+                'Year': meta['year'],
+                'Author': meta['author'],
+                'Title': meta['title'],
+                'Journal': meta['journal'],
+                'DOI': meta['doi'],
+                'Incoming Edge Weight': incoming_weight,
+            })
+        path_table = pd.DataFrame(path_rows)
+
+        results = {
+            'method': method,
+            'knowledge_flow_edges': flow_edges,
+            'path': [str(node) for node in path],
+            'edge_weights': edges_table,
+            'path_table': path_table,
+        }
+        self.main_path_results = results
+        return results
+
+    # Function: Reference Diversity
+    def reference_diversity(self, paper_ids = None):
+        selected = self._safe_doc_indices(paper_ids) if (paper_ids is not None) else list(range(self.data.shape[0]))
+        years = pd.to_numeric(self.data['year'], errors = 'coerce').fillna(np.nan).tolist()
+        internal_refs = self._internal_reference_doc_ids()
+        source_col = 'abbrev_source_title' if ('abbrev_source_title' in self.data.columns) else 'journal'
+        rows = []
+
+        for idx in selected:
+            paper_year = years[idx]
+            refs = [ref for ref in self.ref[idx] if str(ref).strip().upper() != 'UNKNOWN']
+            internal_ids = [ref_idx for ref_idx in internal_refs[idx] if 0 <= ref_idx < self.data.shape[0]]
+            ref_ages = []
+            internal_sources = []
+            self_cites = 0
+            focal_authors = set([str(a).strip().lower() for a in self.aut[idx] if str(a).strip().upper() != 'UNKNOWN'])
+
+            for ref_idx in internal_ids:
+                ref_year = pd.to_numeric(self.data.iloc[ref_idx].get('year', np.nan), errors = 'coerce')
+                if (pd.notna(paper_year) and pd.notna(ref_year)):
+                    ref_ages.append(float(paper_year) - float(ref_year))
+                src_name = str(self.data.iloc[ref_idx].get(source_col, 'UNKNOWN')).strip().lower()
+                if (src_name and src_name != 'unknown'):
+                    internal_sources.append(src_name)
+                ref_authors = set([str(a).strip().lower() for a in self.aut[ref_idx] if str(a).strip().upper() != 'UNKNOWN'])
+                if (len(focal_authors.intersection(ref_authors)) > 0):
+                    self_cites += 1
+
+            source_entropy = np.nan
+            source_entropy_norm = np.nan
+            unique_sources = len(set(internal_sources))
+            if (len(internal_sources) > 0 and unique_sources > 0):
+                counts = pd.Series(internal_sources).value_counts(normalize = True).values
+                source_entropy = float(-(counts * np.log(counts)).sum())
+                if (unique_sources > 1):
+                    source_entropy_norm = float(source_entropy / np.log(unique_sources))
+                else:
+                    source_entropy_norm = 0.0
+
+            row = {
+                'Paper ID': str(idx),
+                'Year': int(paper_year) if pd.notna(paper_year) else np.nan,
+                'N References': int(len(refs)),
+                'Unique References': int(len(set(refs))),
+                'N Internal References': int(len(internal_ids)),
+                'Internal Reference Share': float(len(internal_ids) / len(refs)) if len(refs) > 0 else np.nan,
+                'Mean Reference Age': float(np.mean(ref_ages)) if len(ref_ages) > 0 else np.nan,
+                'Median Reference Age': float(np.median(ref_ages)) if len(ref_ages) > 0 else np.nan,
+                'Std Reference Age': float(np.std(ref_ages)) if len(ref_ages) > 0 else np.nan,
+                'Min Reference Age': float(np.min(ref_ages)) if len(ref_ages) > 0 else np.nan,
+                'Max Reference Age': float(np.max(ref_ages)) if len(ref_ages) > 0 else np.nan,
+                'Unique Internal Sources': int(unique_sources),
+                'Source Entropy': source_entropy,
+                'Normalized Source Entropy': source_entropy_norm,
+                'Self Citation Rate': float(self_cites / len(internal_ids)) if len(internal_ids) > 0 else np.nan,
+            }
+            rows.append(row)
+
+        results = pd.DataFrame(rows)
+        self.reference_diversity_table = results
+        return results
+
+    # Function: Disruption Index
+    def disruption_index(self, paper_ids = None, strict_future = True, min_future_citers = 1):
+        selected = self._safe_doc_indices(paper_ids) if (paper_ids is not None) else list(range(self.data.shape[0]))
+        years = pd.to_numeric(self.data['year'], errors = 'coerce').fillna(-1).astype(int).tolist()
+        internal_refs = self._internal_reference_doc_ids()
+
+        citers_of = defaultdict(set)
+        for citing_idx, refs in enumerate(internal_refs):
+            citing_year = years[citing_idx]
+            for cited_idx in refs:
+                if (citing_idx == cited_idx or cited_idx < 0 or cited_idx >= len(years)):
+                    continue
+                cited_year = years[cited_idx]
+                if (strict_future == True and citing_year <= cited_year):
+                    continue
+                if (strict_future == False and citing_year < cited_year):
+                    continue
+                citers_of[cited_idx].add(citing_idx)
+
+        rows = []
+        for focal_idx in selected:
+            focal_year = years[focal_idx]
+            focal_refs = set()
+            for ref_idx in internal_refs[focal_idx]:
+                if (0 <= ref_idx < len(years)):
+                    if (strict_future == True and years[ref_idx] < focal_year):
+                        focal_refs.add(ref_idx)
+                    elif (strict_future == False and years[ref_idx] <= focal_year):
+                        focal_refs.add(ref_idx)
+
+            focal_citers = set([j for j in citers_of.get(focal_idx, set()) if years[j] > focal_year])
+            ref_citers = set()
+            for ref_idx in focal_refs:
+                ref_citers.update([j for j in citers_of.get(ref_idx, set()) if years[j] > focal_year and j != focal_idx])
+
+            n_i = 0
+            n_j = 0
+            for citer_idx in focal_citers:
+                citer_refs = set(internal_refs[citer_idx])
+                if (len(citer_refs.intersection(focal_refs)) > 0):
+                    n_j += 1
+                else:
+                    n_i += 1
+            n_k = len(ref_citers.difference(focal_citers))
+            denom = n_i + n_j + n_k
+            score = float((n_i - n_j) / denom) if denom > 0 else np.nan
+            valid = bool(len(focal_citers) >= int(min_future_citers) and denom > 0)
+            if (valid == False and denom > 0 and len(focal_citers) < int(min_future_citers)):
+                score = np.nan
+
+            rows.append({
+                'Paper ID': str(focal_idx),
+                'Year': int(focal_year) if focal_year >= 0 else np.nan,
+                'N Internal References': int(len(focal_refs)),
+                'N Future Citers': int(len(focal_citers)),
+                'N_i': int(n_i),
+                'N_j': int(n_j),
+                'N_k': int(n_k),
+                'Disruption Index': score,
+                'Valid': valid,
+            })
+
+        results = pd.DataFrame(rows)
+        self.disruption_index_table = results
+        return results
+
+############################################################################
+
     # Function: Sentence Embeddings # 'abs', 'title', 'kwa', 'kwp'
+    # Helper: chunked sentence-encoding shared by create_embeddings and
+    # docs_projection's embeddings=True branch. Pulls the chunk size,
+    # encoder batch size and verbosity flag from self.batch_config.
+    def _encode_embeddings_chunked(self, model_obj, corpus):
+        cfg = getattr(self, 'batch_config', None)
+        text_chunk_size = int(getattr(cfg, 'embedding_text_chunk_size', 2000)) if cfg is not None else 2000
+        batch_size      = int(getattr(cfg, 'embedding_batch_size',      128))  if cfg is not None else 128
+        verbose         = bool(getattr(cfg, 'verbose',                  False)) if cfg is not None else False
+        if verbose:
+            n_chunks = -(-len(corpus) // text_chunk_size) if text_chunk_size > 0 else 1
+            print(f'[pybibx batch] _encode_embeddings_chunked: texts={len(corpus)}, '
+                  f'text_chunk_size={text_chunk_size}, batch_size={batch_size}, n_chunks={n_chunks}')
+        emb_chunks = []
+        for text_chunk in chunk_list(corpus, text_chunk_size):
+            try:
+                emb = model_obj.encode(list(text_chunk), batch_size = batch_size, show_progress_bar = verbose)
+            except TypeError:
+                # Older / custom encoders without these kwargs.
+                emb = model_obj.encode(list(text_chunk))
+            emb_chunks.append(np.asarray(emb))
+        return concat_numpy_chunks(emb_chunks)
+
     def create_embeddings(self, stop_words = ['en'], rmv_custom_words = [], corpus_type = 'abs', model = 'allenai/scibert_scivocab_uncased'): 
         SentenceTransformer = _get_sentence_transformer()
         _require_dependency(SentenceTransformer, 'sentence-transformers', 'sentence embeddings')
@@ -6255,8 +7371,8 @@ class pbx_probe():
         elif (corpus_type == 'kwp'):
             corpus = self.data['keywords']
             corpus = corpus.tolist()
-        corpus = ['' if pd.isnull(item) else str(item) for item in corpus]
-        self.embds = model.encode(corpus)
+        corpus     = ['' if pd.isnull(item) else str(item) for item in corpus]
+        self.embds = self._encode_embeddings_chunked(model, corpus)
         return 
 
 ############################################################################

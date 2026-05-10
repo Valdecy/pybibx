@@ -200,9 +200,9 @@ def run_fn(func, *args, **kwargs):
     try:
         import pandas as pd
         if isinstance(ret, pd.DataFrame):
-            result_data = {'type': 'dataframe', 'html': ret.to_html(
-                classes='result-table', border=0, index=True,
-                max_rows=50, float_format=lambda x: f'{x:.4f}' if isinstance(x, float) else x
+            result_data = {'type': 'dataframe', 'html': _df_html(
+                ret, index=True, limit=50,
+                float_format=lambda x: f'{x:.4f}' if isinstance(x, float) else x
             )}
         elif isinstance(ret, (str, int, float)):
             result_data = {'type': 'text', 'value': str(ret)}
@@ -225,7 +225,13 @@ def run_fn(func, *args, **kwargs):
     }
 
 
-def _df_html(df, index=False, limit=None):
+def _df_to_csv_text(df, index=False):
+    buf = StringIO()
+    df.to_csv(buf, index=index)
+    return buf.getvalue()
+
+
+def _df_html(df, index=False, limit=None, float_format=None):
     import pandas as pd
     if df is None:
         return '<div class="callout warn">No data available.</div>'
@@ -234,13 +240,40 @@ def _df_html(df, index=False, limit=None):
             df = pd.DataFrame(df)
         except Exception:
             return f'<pre class="text-out">{str(df)}</pre>'
-    if limit is not None and len(df) > limit:
-        shown = df.head(limit)
-        note = f'<div class="callout info" style="margin-bottom:10px;">Showing first {limit:,} of {len(df):,} rows.</div>'
-    else:
-        shown = df
-        note = ''
-    return note + shown.to_html(classes='result-table', border=0, index=index)
+
+    truncated = limit is not None and len(df) > limit
+    shown = df.head(limit) if truncated else df
+    note = ''
+    if truncated:
+        note = (
+            f'<div class="callout info" style="margin-bottom:10px;">'
+            f'Showing first {limit:,} of {len(df):,} rows. '
+            f'Use <strong>Show all rows</strong> to expand the full table.'
+            f'</div>'
+        )
+
+    table_html = shown.to_html(classes='result-table', border=0, index=index, float_format=float_format)
+    payload = {
+        'csv_b64': base64.b64encode(_df_to_csv_text(df, index=index).encode('utf-8')).decode('ascii'),
+        'total_rows': int(len(df)),
+        'shown_rows': int(len(shown)),
+        'index': bool(index),
+        'truncated': bool(truncated),
+    }
+    if truncated:
+        full_html = _df_html(df, index=index, limit=None, float_format=float_format)
+        payload['full_html_b64'] = base64.b64encode(full_html.encode('utf-8')).decode('ascii')
+
+    extra_class = ' is-truncated' if truncated else ''
+    return (
+        f'<div class="df-artifact{extra_class}" '
+        f'data-truncated="{1 if truncated else 0}" '
+        f'data-total-rows="{len(df)}" '
+        f'data-shown-rows="{len(shown)}">'
+        f'<script type="application/json" class="df-payload">{json.dumps(payload)}</script>'
+        f'{note}{table_html}'
+        f'</div>'
+    )
 
 
 def _df_grid_payload(df, limit=None, page=1):
@@ -659,6 +692,7 @@ def upload():
     f   = request.files.get('file')
     db  = request.form.get('db', 'scopus')
     dup = _coerce_form_bool(request.form.get('del_duplicated', 'true'), default=True)
+    expand_refs = _coerce_form_bool(request.form.get('expand_references', 'false'), default=False)
     if not f:
         return jsonify({'ok': False, 'error': 'No file provided'})
     tmp_path = _save_uploaded_file(f)
@@ -671,7 +705,7 @@ def upload():
             from pybibx.base.pbx import pbx_probe
         out = StringIO()
         with redirect_stdout(out):
-            STATE['pbx'] = pbx_probe(tmp_path, db=db, del_duplicated=dup)
+            STATE['pbx'] = pbx_probe(tmp_path, db=db, del_duplicated=dup, expand_references=expand_refs if str(db).lower() == 'openalex' else False)
         pbx = STATE['pbx']
         STATE['original_data'] = pbx.data.copy(deep=True)
         _invalidate_topic_state()
@@ -692,13 +726,14 @@ def upload_merge():
     f   = request.files.get('file')
     db  = request.form.get('db', STATE.get('db') or 'scopus')
     dup = _coerce_form_bool(request.form.get('del_duplicated', 'true'), default=True)
+    expand_refs = _coerce_form_bool(request.form.get('expand_references', 'false'), default=False)
     if not f:
         return jsonify({'ok': False, 'error': 'No file provided'})
     tmp_path = _save_uploaded_file(f)
     try:
         out = StringIO()
         with redirect_stdout(out):
-            STATE['pbx'].merge_database(file_bib=tmp_path, db=db, del_duplicated=dup)
+            STATE['pbx'].merge_database(file_bib=tmp_path, db=db, del_duplicated=dup, expand_references=expand_refs if str(db).lower() == 'openalex' else False)
         STATE['original_data'] = STATE['pbx'].data.copy(deep=True)
         _invalidate_topic_state()
         return jsonify({
@@ -1745,10 +1780,10 @@ select option{background:var(--sur);}
           <div class="upload-mode-requirement" id="upload-mode-requirement"></div>
 
           <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
-            <input type="file" id="file-input" accept=".bib,.csv,.txt" onchange="handleFile(this)"/>
+            <input type="file" id="file-input" accept=".bib,.csv,.txt,.json" onchange="handleFile(this)"/>
             <div class="drop-icon">📄</div>
             <div class="drop-main" id="drop-main">Click or drag &amp; drop your file</div>
-            <div class="drop-sub" id="drop-sub">.bib · .csv · .txt</div>
+            <div class="drop-sub" id="drop-sub">.bib · .csv · .txt · .json</div>
             <div class="drop-file-name" id="file-label">No file selected</div>
           </div>
 
@@ -1759,12 +1794,17 @@ select option{background:var(--sur);}
                 <option value="scopus">Scopus (.bib or .csv)</option>
                 <option value="wos">Web of Science (.bib)</option>
                 <option value="pubmed">PubMed (.txt)</option>
+                <option value="openalex">OpenAlex (.csv or .json)</option>
               </select>
             </div>
-            <div style="display:flex;flex-direction:column;justify-content:flex-end;">
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;gap:8px;">
               <div class="checkbox-row">
                 <input type="checkbox" id="dup-check" checked/>
                 <span>Remove duplicates automatically</span>
+              </div>
+              <div class="checkbox-row" id="openalex-expand-row" style="display:none;">
+                <input type="checkbox" id="openalex-expand-check"/>
+                <span>Expand OpenAlex cited references from JSON / CR_OPENALEX (slower)</span>
               </div>
             </div>
           </div>
@@ -2660,7 +2700,15 @@ function setSelectedUploadFile(file){
   _selectedFile = file || null;
   const label = document.getElementById('file-label');
   if(label) label.textContent = _selectedFile ? _selectedFile.name : 'No file selected';
+  updateOpenAlexUploadOptions();
   refreshUploadActionState();
+}
+
+function updateOpenAlexUploadOptions(){
+  const dbSel = document.getElementById('db-select');
+  const row = document.getElementById('openalex-expand-row');
+  const show = Boolean(dbSel) && (_uploadMode !== 'edited') && (dbSel.value === 'openalex');
+  if(row) row.style.display = show ? 'flex' : 'none';
 }
 
 function updateUploadModeUI(){
@@ -2676,17 +2724,17 @@ function updateUploadModeUI(){
     if(note) note.textContent = 'Load a fresh export as a new working dataset.';
     if(dbRow) dbRow.style.display = 'grid';
     if(editedRow) editedRow.style.display = 'none';
-    if(input) input.accept = '.bib,.csv,.txt';
+    if(input) input.accept = '.bib,.csv,.txt,.json';
     if(main) main.textContent = 'Click or drag & drop your database export';
-    if(sub) sub.textContent = '.bib · .csv · .txt';
+    if(sub) sub.textContent = '.bib · .csv · .txt · .json';
     if(btn) btn.textContent = 'Load Dataset';
   }else if(_uploadMode === 'merge'){
     if(note) note.textContent = 'Merge another export into the currently loaded dataset using bibfile.merge_database(...).';
     if(dbRow) dbRow.style.display = 'grid';
     if(editedRow) editedRow.style.display = 'none';
-    if(input) input.accept = '.bib,.csv,.txt';
+    if(input) input.accept = '.bib,.csv,.txt,.json';
     if(main) main.textContent = 'Click or drag & drop the file to merge';
-    if(sub) sub.textContent = '.bib · .csv · .txt';
+    if(sub) sub.textContent = '.bib · .csv · .txt · .json';
     if(btn) btn.textContent = 'Merge File';
   }else{
     if(note) note.textContent = 'Load an edited dataset file and replace the current working table.';
@@ -2697,6 +2745,7 @@ function updateUploadModeUI(){
     if(sub) sub.textContent = '.csv · .tsv · .txt';
     if(btn) btn.textContent = 'Load Edited Dataset';
   }
+  updateOpenAlexUploadOptions();
   refreshUploadActionState();
 }
 
@@ -2773,9 +2822,18 @@ async function loadData(){
     return;
   }
   const btn = document.getElementById('load-btn');
+  const selectedDb = _uploadMode === 'edited' ? '' : (document.getElementById('db-select')?.value || '');
+  const expandRefs = selectedDb === 'openalex' && Boolean(document.getElementById('openalex-expand-check')?.checked);
   const idleLabel = _uploadMode === 'merge' ? 'Merge File' : (_uploadMode === 'edited' ? 'Load Edited Dataset' : 'Load Dataset');
   btn.disabled = true;
   btn.textContent = _uploadMode === 'merge' ? 'Merging…' : (_uploadMode === 'edited' ? 'Loading edited dataset…' : 'Loading…');
+  if(_uploadMode === 'edited'){
+    showSpinner('Loading edited dataset…');
+  }else if(selectedDb === 'openalex'){
+    showSpinner(expandRefs ? 'Loading OpenAlex data and expanding references…' : 'Loading OpenAlex data…');
+  }else{
+    showSpinner(_uploadMode === 'merge' ? 'Merging dataset…' : 'Loading dataset…');
+  }
   try{
     if(_uploadMode === 'edited'){
       const fd = new FormData();
@@ -2794,9 +2852,11 @@ async function loadData(){
       await finalizeLoadedDataset(d);
     }else{
       const fd = new FormData();
+      const selectedDb = document.getElementById('db-select').value;
       fd.append('file', _selectedFile);
-      fd.append('db', document.getElementById('db-select').value);
+      fd.append('db', selectedDb);
       fd.append('del_duplicated', document.getElementById('dup-check').checked);
+      fd.append('expand_references', selectedDb === 'openalex' && document.getElementById('openalex-expand-check')?.checked);
       const url = _uploadMode === 'merge' ? '/api/upload_merge' : '/api/upload';
       const r = await fetch(url,{method:'POST',body:fd});
       const d = await r.json();
@@ -2810,6 +2870,7 @@ async function loadData(){
     }
   }catch(e){ toast('Connection error: ' + e.message,'err'); }
   finally{
+    hideSpinner();
     btn.disabled = false;
     btn.textContent = idleLabel;
     const input = document.getElementById('file-input');
@@ -3175,7 +3236,7 @@ function mountGrid(host, payload, opts = {}){
             <td class="row-index row-selector" data-abs-row="${absRow}" title="Select row ${absRow + 1}">${(absRow + 1).toLocaleString()}</td>
             ${columns.map((_, colIdx) => {
               const value = Array.isArray(row) && row[colIdx] != null ? row[colIdx] : '';
-              return `<td ${editable ? 'contenteditable="true"' : ''} data-row="${rowIdx}" data-abs-row="${absRow}" data-col="${colIdx}" spellcheck="false"><span class="cell-content">${escapeHtml(value)}</span></td>`;
+              return `<td ${editable ? 'contenteditable="true"' : ''} data-row="${rowIdx}" data-abs-row="${absRow}" data-col="${colIdx}" spellcheck="false" title="${escapeHtml(value)}"><span class="cell-content">${escapeHtml(value)}</span></td>`;
             }).join('')}
           </tr>`;
         }).join('') : `<tr><td colspan="${columns.length + 1}"><div class="grid-empty">No rows to display.</div></td></tr>`}
@@ -3783,6 +3844,22 @@ function prettyTitle(raw){
     .replace(/\b\w/g, m => m.toUpperCase())
     .trim() || 'Output';
 }
+function decodeB64Text(value){
+  if(!value) return '';
+  try{
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
+  }catch(_err){
+    try{ return atob(value); }catch(_err2){ return ''; }
+  }
+}
+function getTablePayload(node){
+  const root = node?.closest?.('.table-wrap') || node;
+  const script = root?.querySelector?.('.df-payload');
+  if(!script) return null;
+  try{ return JSON.parse(script.textContent || '{}'); }catch(_err){ return null; }
+}
 function enhanceTableWrap(wrap, title='Table'){
   const table = wrap.querySelector('table');
   if(!table || table.dataset.enhanced === '1') return;
@@ -3791,6 +3868,7 @@ function enhanceTableWrap(wrap, title='Table'){
   const thead = table.tHead;
   if(!tbody || !thead || !thead.rows.length) return;
 
+  const payload = getTablePayload(wrap);
   const headerRow = thead.rows[thead.rows.length - 1];
   const allRows = [...tbody.rows];
   const tools = document.createElement('div');
@@ -3802,8 +3880,26 @@ function enhanceTableWrap(wrap, title='Table'){
   resetBtn.type = 'button';
   resetBtn.textContent = 'Reset filters';
   tools.appendChild(stat);
+  if(payload?.truncated && payload?.full_html_b64){
+    const expandBtn = document.createElement('button');
+    expandBtn.type = 'button';
+    expandBtn.textContent = 'Show all rows';
+    expandBtn.addEventListener('click', ()=>{
+      const fullHtml = decodeB64Text(payload.full_html_b64);
+      if(!fullHtml){ toast('Could not expand full table', 'err'); return; }
+      wrap.innerHTML = fullHtml;
+      enhanceTableWrap(wrap, title);
+      toast('✓ Full table loaded', 'ok');
+    });
+    tools.appendChild(expandBtn);
+  }
   tools.appendChild(resetBtn);
   wrap.prepend(tools);
+
+  table.querySelectorAll('th, td').forEach(cell => {
+    const text = (cell.textContent || '').trim();
+    if(text) cell.title = text;
+  });
 
   const filterRow = thead.insertRow(-1);
   filterRow.className = 'filter-row';
@@ -3940,6 +4036,11 @@ function escapeCSVCell(value){
 }
 function tableElementToCSV(tableEl){
   if(!tableEl) return '';
+  const payload = getTablePayload(tableEl);
+  if(payload?.csv_b64){
+    const csv = decodeB64Text(payload.csv_b64);
+    if(csv) return csv;
+  }
   const rows = [...tableEl.querySelectorAll('tr')];
   return rows.map((tr)=>{
     const cells = [...tr.querySelectorAll('th,td')];
@@ -4224,6 +4325,9 @@ fetch('/api/status').then(r=>r.json()).then(d=>{
   setWordEmbeddingsReady(Boolean(d.info?.word_embeddings_ready));
   setAIArea('topics');
   updateUploadModeUI();
+  const dbSel = document.getElementById('db-select');
+  if(dbSel) dbSel.addEventListener('change', updateOpenAlexUploadOptions);
+  updateOpenAlexUploadOptions();
 });
 </script>
 </body>

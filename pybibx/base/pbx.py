@@ -21,6 +21,7 @@ import PIL
 import re
 import unicodedata
 import textwrap
+import json
 
 try:
     import importlib.resources as pkg_resources
@@ -291,7 +292,7 @@ def _require_dependency(dep, package = None, feature = None):
 
 # pbx Class
 class pbx_probe():
-    def __init__(self, file_bib = None, db = 'scopus', del_duplicated = True, data = None):
+    def __init__(self, file_bib = None, db = 'scopus', del_duplicated = True, data = None, **kwargs):
         db                     = db.lower()
         self.database          = db
         self.institution_names =  [ 
@@ -688,14 +689,117 @@ class pbx_probe():
                                     '#f4d054', '#fbdd7e', '#ffff7e', '#cd7584', '#f9bc08', '#c7c10c'
                                   ]
         if (data is not None):
-            self.data    = data.copy(deep = True)
+            if (self.database == 'openalex'):
+                from .openalex import works_to_dataframe, normalize_openalex_dataframe
+                expand_references = kwargs.get('expand_references', False)
+                mailto = kwargs.get('mailto', None)
+                max_refs_per_work = kwargs.get('max_refs_per_work', None)
+                reference_cache = kwargs.get('reference_cache', None)
+                if isinstance(data, pd.DataFrame):
+                    self.data = normalize_openalex_dataframe(data)
+                elif isinstance(data, list):
+                    self.data = works_to_dataframe(data, expand_references = expand_references, mailto = mailto, max_refs_per_work = max_refs_per_work, reference_cache = reference_cache)
+                else:
+                    raise TypeError("For db='openalex', data must be a pandas DataFrame or a list of OpenAlex work dictionaries.")
+                self._normalize_openalex_country_columns()
+            else:
+                self.data = data.copy(deep = True)
             self.entries = []
+            self.vb = ['A Total of ' + str(self.data.shape[0]) + ' Documents were Found']
         else:
             if (file_bib is None):
                 raise ValueError('file_bib is required unless a DataFrame is provided via data=...')
-            self.data, self.entries = self.__read_bib(file_bib, db, del_duplicated)
+            if (self.database == 'openalex'):
+                from .openalex import load_openalex_auto
+                expand_references = kwargs.get('expand_references', False)
+                mailto = kwargs.get('mailto', None)
+                max_refs_per_work = kwargs.get('max_refs_per_work', None)
+                reference_cache = kwargs.get('reference_cache', None)
+                self.data = load_openalex_auto(
+                    file_bib,
+                    expand_references = expand_references,
+                    mailto = mailto,
+                    max_refs_per_work = max_refs_per_work,
+                    reference_cache = reference_cache,
+                )
+                self._normalize_openalex_country_columns()
+                self.entries = []
+                doc = self.data.shape[0]
+                self.vb = ['A Total of ' + str(doc) + ' Documents were Found']
+            else:
+                self.data, self.entries = self.__read_bib(file_bib, db, del_duplicated)
         self.batch_config = BatchConfig()
         self.__make_bib()
+
+    def _country_lookup_maps(self):
+        if not hasattr(self, '_country_lookup_cache'):
+            lookup = {}
+            for alpha2, name in zip(self.country_alpha_2, self.country_names):
+                lookup[str(alpha2).upper()] = name
+            for alpha3, name in zip(self.country_alpha_3, self.country_names):
+                lookup[str(alpha3).upper()] = name
+            for name in self.country_names:
+                lookup[str(name).lower()] = name
+            lookup['XK'] = 'Kosovo'
+            lookup['XKX'] = 'Kosovo'
+            lookup['kosovo'] = 'Kosovo'
+            self._country_lookup_cache = lookup
+        return self._country_lookup_cache
+
+    def _resolve_country_name(self, value):
+        if pd.isna(value):
+            return 'UNKNOWN'
+        text = str(value).strip()
+        if (text == '') or (text.upper() == 'UNKNOWN'):
+            return 'UNKNOWN'
+        lookup = self._country_lookup_maps()
+        upper_text = text.upper()
+        lower_text = text.lower()
+        if upper_text in lookup:
+            return lookup[upper_text]
+        if lower_text in lookup:
+            return lookup[lower_text]
+        return text
+
+    def _normalize_country_value(self, value):
+        if pd.isna(value):
+            return 'UNKNOWN'
+        text = str(value).strip()
+        if (text == '') or (text.upper() == 'UNKNOWN'):
+            return 'UNKNOWN'
+        tokens = [item.strip() for item in text.replace('|', ';').split(';') if item.strip()]
+        if len(tokens) == 0:
+            return 'UNKNOWN'
+        normalized = [self._resolve_country_name(token) for token in tokens]
+        normalized = [item for item in normalized if item != 'UNKNOWN']
+        return '; '.join(normalized) if len(normalized) > 0 else 'UNKNOWN'
+
+    def _country_geo_record(self, value):
+        country_name = self._resolve_country_name(value)
+        if (country_name == 'UNKNOWN'):
+            return None
+        if not hasattr(self, '_country_name_to_index_cache'):
+            self._country_name_to_index_cache = {name: idx for idx, name in enumerate(self.country_names)}
+        idx = self._country_name_to_index_cache.get(country_name)
+        if idx is not None:
+            return {
+                'name': self.country_names[idx],
+                'lat': self.country_lat_long[idx][0],
+                'lon': self.country_lat_long[idx][1],
+                'iso3': self.country_alpha_3[idx],
+            }
+        if (country_name == 'Kosovo'):
+            return {'name': 'Kosovo', 'lat': 42.6026, 'lon': 20.9030, 'iso3': 'XKX'}
+        return None
+
+    def _normalize_openalex_country_columns(self):
+        if (getattr(self, 'database', '').lower() != 'openalex'):
+            return
+        if (not hasattr(self, 'data')) or (self.data is None):
+            return
+        for col in ['country', 'CU']:
+            if col in self.data.columns:
+                self.data[col] = self.data[col].apply(self._normalize_country_value)
     
     # Function: Configure batch processing
     def set_batch_config(self, **kwargs):
@@ -1315,7 +1419,7 @@ class pbx_probe():
         data = chunk.copy(deep = True)
         def preprocess_affiliation(row):
             source = row['source'].lower()
-            if (source in ['scopus', 'pubmed']):
+            if (source in ['scopus', 'pubmed', 'openalex']):
                 return row['affiliation']
             elif (source == 'wos'):
                 aff = row['affiliation_'].replace('(Corresponding Author)', '')
@@ -1328,8 +1432,21 @@ class pbx_probe():
         rows   = []
         unique = set()
         for local_i, (_, row) in enumerate(data.iterrows()):
-            affiliations = row['processed_affiliation'].split(';')
             authors      = authors_chunk[local_i] if local_i < len(authors_chunk) else []
+            source       = str(row.get('source', 'UNKNOWN')).lower()
+            if (source == 'openalex') and ('country' in data.columns):
+                raw_countries   = str(row.get('country', 'UNKNOWN'))
+                split_countries = [c.strip() for c in raw_countries.replace('|', ';').split(';') if c.strip()]
+                if (len(split_countries) == 0):
+                    split_countries = ['UNKNOWN']
+                if (len(split_countries) < len(authors)):
+                    split_countries.extend([split_countries[-1]] * (len(authors) - len(split_countries)))
+                row_countries = split_countries[:len(authors)] if len(authors) > 0 else split_countries
+                for country in row_countries:
+                    unique.add(country)
+                rows.append(row_countries)
+                continue
+            affiliations = row['processed_affiliation'].split(';')
             row_countries = []
             for author in authors:
                 detected_country = 'UNKNOWN'
@@ -1376,7 +1493,7 @@ class pbx_probe():
         else:
             affiliations_wos = pd.Series([''] * len(chunk), index = chunk.index)
         processed_affiliations = np.where(
-            sources.isin(['scopus', 'pubmed']),
+            sources.isin(['scopus', 'pubmed', 'openalex']),
             affiliations,
             np.where(sources == 'wos', affiliations_wos, 'UNKNOWN')
         )
@@ -1386,6 +1503,19 @@ class pbx_probe():
         unique = set()
         for local_i, (_, top_inst) in enumerate(top_institutions.items()):
             authors = authors_chunk[local_i] if local_i < len(authors_chunk) else []
+            source  = str(chunk.iloc[local_i].get('source', 'UNKNOWN')).lower() if len(chunk) > local_i else 'UNKNOWN'
+            if (source == 'openalex') and ('institution' in chunk.columns):
+                raw_institutions   = str(chunk.iloc[local_i].get('institution', 'UNKNOWN'))
+                split_institutions = [i.strip() for i in raw_institutions.replace('|', ';').split(';') if i.strip()]
+                if (len(split_institutions) == 0):
+                    split_institutions = ['UNKNOWN']
+                if (len(split_institutions) < len(authors)):
+                    split_institutions.extend([split_institutions[-1]] * (len(authors) - len(split_institutions)))
+                row_inst = [re.sub(r'^(?:[A-Za-z]\.\s?)+', '', i) for i in (split_institutions[:len(authors)] if len(authors) > 0 else split_institutions)]
+                for inst in row_inst:
+                    unique.add(inst)
+                rows.append(row_inst)
+                continue
             row_inst = []
             aff_str  = processed_affiliations.iloc[local_i]
             for author in authors:
@@ -1599,7 +1729,7 @@ class pbx_probe():
         return matches
     
     # Function: Merge Database
-    def merge_database(self, file_bib, db, del_duplicated):
+    def merge_database(self, file_bib, db, del_duplicated, **kwargs):
         old_vb   = [item for item in self.vb]
         old_size = self.data.shape[0]
         print('############################################################################')
@@ -1613,7 +1743,25 @@ class pbx_probe():
         print('')
         print('Added Database')
         print('')
-        data, _    = self.__read_bib(file_bib, db, del_duplicated)
+        if (db.lower() == 'openalex'):
+            from .openalex import load_openalex_auto
+            expand_references = kwargs.get('expand_references', False)
+            mailto = kwargs.get('mailto', None)
+            max_refs_per_work = kwargs.get('max_refs_per_work', None)
+            reference_cache = kwargs.get('reference_cache', None)
+            data = load_openalex_auto(
+                file_bib,
+                expand_references = expand_references,
+                mailto = mailto,
+                max_refs_per_work = max_refs_per_work,
+                reference_cache = reference_cache,
+            )
+            data = data.copy(deep = True)
+            for col in ['country', 'CU']:
+                if col in data.columns:
+                    data[col] = data[col].apply(self._normalize_country_value)
+        else:
+            data, _ = self.__read_bib(file_bib, db, del_duplicated)
         self.data  = pd.concat([self.data, data])
         self.data  = self.data.reset_index(drop = True)
         self.data  = self.data.fillna('UNKNOWN')
@@ -1727,7 +1875,12 @@ class pbx_probe():
 
     # Function: Load Working Database from DataFrame (in memory)
     def load_database_df(self, data):
-        self.data = data.copy(deep = True)
+        if (getattr(self, 'database', '').lower() == 'openalex'):
+            from .openalex import normalize_openalex_dataframe
+            self.data = normalize_openalex_dataframe(data)
+            self._normalize_openalex_country_columns()
+        else:
+            self.data = data.copy(deep = True)
         self.__make_bib(verbose = False)
         return
 
@@ -1740,8 +1893,86 @@ class pbx_probe():
 
     # Function: Instantiate from DataFrame
     @classmethod
-    def from_dataframe(cls, data, db = 'scopus', del_duplicated = False):
-        return cls(file_bib = None, db = db, del_duplicated = del_duplicated, data = data)
+    def from_dataframe(cls, data, db = 'scopus', del_duplicated = False, **kwargs):
+        return cls(file_bib = None, db = db, del_duplicated = del_duplicated, data = data, **kwargs)
+
+
+    # Function: OpenAlex citation edges
+    def openalex_citation_edges(self):
+        if (getattr(self, 'database', '').lower() != 'openalex'):
+            raise ValueError("openalex_citation_edges is only available when database == 'openalex'.")
+        from .openalex import parse_openalex_id_list, normalize_openalex_id, sanitize_openalex_reference_text, format_openalex_id_label
+        if ('openalex_id' in self.data.columns):
+            id_col = 'openalex_id'
+        elif ('UT' in self.data.columns):
+            id_col = 'UT'
+        else:
+            return pd.DataFrame(columns = ['source_id', 'target_id', 'source_title', 'target_title'])
+        title_map = {}
+        imported_ids = set()
+        for _, row in self.data.iterrows():
+            oid = normalize_openalex_id(row.get(id_col, ''))
+            if oid:
+                imported_ids.add(oid)
+                title_map[oid] = row.get('title', row.get('TI', 'UNKNOWN'))
+        rows = []
+        for _, row in self.data.iterrows():
+            source_id = normalize_openalex_id(row.get(id_col, ''))
+            if not source_id:
+                continue
+            refs_value = row.get('cr_openalex', row.get('CR_OPENALEX', row.get('references', '')))
+            for target_id in parse_openalex_id_list(refs_value):
+                target_id = normalize_openalex_id(target_id)
+                if target_id in imported_ids:
+                    rows.append({
+                        'source_id': source_id,
+                        'target_id': target_id,
+                        'source_title': title_map.get(source_id, 'UNKNOWN'),
+                        'target_title': title_map.get(target_id, 'UNKNOWN'),
+                    })
+        return pd.DataFrame(rows, columns = ['source_id', 'target_id', 'source_title', 'target_title'])
+
+    # Function: OpenAlex citation graph
+    def openalex_citation_graph(self):
+        edges = self.openalex_citation_edges()
+        graph = nx.DiGraph()
+        if ('openalex_id' in self.data.columns):
+            id_col = 'openalex_id'
+        elif ('UT' in self.data.columns):
+            id_col = 'UT'
+        else:
+            return graph
+        from .openalex import normalize_openalex_id
+        for _, row in self.data.iterrows():
+            node_id = normalize_openalex_id(row.get(id_col, ''))
+            if node_id:
+                graph.add_node(node_id, title = row.get('title', row.get('TI', 'UNKNOWN')))
+        for _, row in edges.iterrows():
+            graph.add_edge(row['source_id'], row['target_id'])
+        return graph
+
+    # Function: OpenAlex reference table
+    def openalex_reference_table(self):
+        if (getattr(self, 'database', '').lower() != 'openalex'):
+            raise ValueError("openalex_reference_table is only available when database == 'openalex'.")
+        from .openalex import parse_openalex_id_list, normalize_openalex_id, sanitize_openalex_reference_text, format_openalex_id_label
+        rows = []
+        for _, row in self.data.iterrows():
+            source_id = normalize_openalex_id(row.get('openalex_id', row.get('UT', '')))
+            source_title = row.get('title', row.get('TI', 'UNKNOWN'))
+            ref_ids = parse_openalex_id_list(row.get('cr_openalex', row.get('CR_OPENALEX', '')))
+            ref_texts = []
+            refs_value = row.get('references', row.get('CR', ''))
+            if isinstance(refs_value, str):
+                ref_texts = [sanitize_openalex_reference_text(item.strip()) for item in refs_value.split(';') if item.strip()]
+            for i, ref_id in enumerate(ref_ids):
+                rows.append({
+                    'citing_work_id': source_id,
+                    'citing_title': source_title,
+                    'cited_work_id': normalize_openalex_id(ref_id),
+                    'cited_reference': ref_texts[i] if i < len(ref_texts) else 'UNKNOWN',
+                })
+        return pd.DataFrame(rows, columns = ['citing_work_id', 'citing_title', 'cited_work_id', 'cited_reference'])
     
     # Function: Merge Author
     def merge_author(self, get = [], replace_for = 'name'):
@@ -2437,7 +2668,7 @@ class pbx_probe():
         
         def preprocess_affiliation(row):
             source = row['source'].lower()
-            if (source in ['scopus', 'pubmed']):
+            if (source in ['scopus', 'pubmed', 'openalex']):
                 return row['affiliation']
             elif (source == 'wos'):
                 aff = row['affiliation_'].replace('(Corresponding Author)', '')
@@ -2480,6 +2711,26 @@ class pbx_probe():
         
         #----------------------------------------------------------------------
         
+
+        if (self.data['source'].str.lower() == 'openalex').all() and ('country' in self.data.columns):
+            ctr = []
+            for index, row in self.data.iterrows():
+                split_countries = [c.strip() for c in str(row.get('country', 'UNKNOWN')).replace('|', ';').split(';') if c.strip()]
+                if (len(split_countries) == 0):
+                    split_countries = ['UNKNOWN']
+                authors = self.aut[index]
+                if (len(split_countries) < len(authors)):
+                    split_countries.extend([split_countries[-1]] * (len(authors) - len(split_countries)))
+                row_countries = split_countries[:len(authors)] if len(authors) > 0 else split_countries
+                ctr.append(row_countries)
+            self.author_country_map = {author: [] for author in self.u_aut}
+            for index, countries in enumerate(ctr):
+                for author, country in zip(self.aut[index], countries):
+                    if author in self.author_country_map and not any(entry[0] == index for entry in self.author_country_map[author]):
+                        self.author_country_map[author].append((index, country))
+            u_ctr = sorted(set(country for row in ctr for country in row))
+            return ctr, u_ctr
+
         data = self.data.copy(deep    = True)
         data['processed_affiliation'] = data.apply(preprocess_affiliation, axis = 1).str.lower()
         country_replacements          = {
@@ -2565,11 +2816,38 @@ class pbx_probe():
 
         #----------------------------------------------------------------------
 
+        if (self.data['source'].str.lower() == 'openalex').all() and ('institution' in self.data.columns):
+            inst = []
+            for index, row in self.data.iterrows():
+                split_institutions = [i.strip() for i in str(row.get('institution', 'UNKNOWN')).replace('|', ';').split(';') if i.strip()]
+                if (len(split_institutions) == 0):
+                    split_institutions = ['UNKNOWN']
+                authors = self.aut[index]
+                if (len(split_institutions) < len(authors)):
+                    split_institutions.extend([split_institutions[-1]] * (len(authors) - len(split_institutions)))
+                row_inst = [re.sub(r'^(?:[A-Za-z]\.\s?)+', '', i) for i in (split_institutions[:len(authors)] if len(authors) > 0 else split_institutions)]
+                inst.append(row_inst)
+            self.author_inst_map = {author: [] for author in self.u_aut}
+            for index, institutions in enumerate(inst):
+                for author, institution in zip(self.aut[index], institutions):
+                    if author in self.author_inst_map:
+                        self.author_inst_map[author].append((index, institution))
+            self.author_inst_map = {k: list(set(v)) for k, v in self.author_inst_map.items()}
+            self.corr_a_inst_map = {}
+            self.frst_a_inst_map = {}
+            for index, row in self.data.iterrows():
+                if (self.aut[index]):
+                    first_author = self.aut[index][0]
+                    if (first_author in self.author_inst_map):
+                        self.frst_a_inst_map[first_author] = self.author_inst_map[first_author]
+            u_inst = list(set([institution for sublist in inst for institution in sublist]))
+            return inst, u_inst
+
         sources                = self.data['source'].str.lower()
         affiliations           = (self.data['affiliation'].fillna('').str.lower() if 'affiliation' in self.data.columns else pd.Series([''] * len(self.data)) )
         affiliations_wos       = (self.data['affiliation_'].fillna('').str.lower() if 'affiliation_' in self.data.columns else pd.Series([''] * len(self.data)) )
         affiliations_wos       = (self.data['affiliation_'].fillna('').str.lower() if 'affiliation_' in self.data.columns else pd.Series([''] * len(self.data)) )
-        processed_affiliations = np.where(sources.isin(['scopus', 'pubmed']), affiliations, np.where(sources == 'wos', affiliations_wos, 'UNKNOWN') )
+        processed_affiliations = np.where(sources.isin(['scopus', 'pubmed', 'openalex']), affiliations, np.where(sources == 'wos', affiliations_wos, 'UNKNOWN') )
         processed_affiliations = pd.Series(processed_affiliations)
         top_institutions       = processed_affiliations.apply( lambda row: extract_top_institution_with_priority(row, self.institution_names))
         inst                   = [top for top in top_institutions]
@@ -2695,12 +2973,54 @@ class pbx_probe():
 
     # Function: Get Reference ID
     def __get_ref_id(self):
-        labels_r       = ['r_' + str(i) for i in range(0, len(self.u_ref))]
-        sources        = self.data['source'].str.lower()
-        keys_1         = self.data['title'].str.lower().str.replace('[', '', regex = False).str.replace(']', '', regex = False).tolist()
-        keys_2         = self.data['doi'].str.lower().tolist()
-        keys           = np.where(sources.isin(['scopus', 'pubmed']), keys_1, np.where(sources == 'wos', keys_2, None))
-        corpus          = ' '.join(ref.lower() for ref in self.u_ref)
+        labels_r = ['r_' + str(i) for i in range(0, len(self.u_ref))]
+        sources = self.data['source'].fillna('').astype(str).str.lower()
+
+        # OpenAlex: use CR_OPENALEX/openalex_id directly instead of fuzzy text
+        # matching. This keeps local citation, historiograph, and main-path
+        # analysis working even when legacy expanded references were malformed.
+        is_openalex = (
+            ('cr_openalex' in self.data.columns or 'CR_OPENALEX' in self.data.columns)
+            and ('openalex_id' in self.data.columns or 'UT' in self.data.columns)
+            and sources.eq('openalex').all()
+        )
+        if (is_openalex):
+            try:
+                from .openalex import parse_openalex_id_list, normalize_openalex_id
+                id_col = 'openalex_id' if ('openalex_id' in self.data.columns) else 'UT'
+                ref_col = 'cr_openalex' if ('cr_openalex' in self.data.columns) else 'CR_OPENALEX'
+                doc_id_map = {}
+                for i in range(0, self.data.shape[0]):
+                    oid = normalize_openalex_id(self.data.iloc[i][id_col])
+                    if (oid):
+                        doc_id_map[oid] = str(i)
+                ref_to_doc = {}
+                for i in range(0, min(len(self.ref), self.data.shape[0])):
+                    ref_ids = parse_openalex_id_list(self.data.iloc[i][ref_col])
+                    ref_txt = self.ref[i] if (i < len(self.ref)) else []
+                    if (len(ref_ids) != len(ref_txt)):
+                        continue
+                    for ref_label, oid in zip(ref_txt, ref_ids):
+                        target_idx = doc_id_map.get(normalize_openalex_id(oid), None)
+                        if (target_idx is not None and ref_label not in ref_to_doc):
+                            ref_to_doc[ref_label] = target_idx
+                mapped_labels = []
+                for j, ref_label in enumerate(self.u_ref):
+                    mapped_labels.append(ref_to_doc.get(ref_label, labels_r[j]))
+                for j, target_idx in enumerate(mapped_labels):
+                    if (str(target_idx).startswith('r_') == False):
+                        try:
+                            self.dy_ref[j] = int(self.dy[int(target_idx)])
+                        except Exception:
+                            pass
+                return mapped_labels
+            except Exception:
+                pass
+
+        keys_1 = self.data['title'].str.lower().str.replace('[', '', regex = False).str.replace(']', '', regex = False).tolist()
+        keys_2 = self.data['doi'].str.lower().tolist()
+        keys = np.where(sources.isin(['scopus', 'pubmed']), keys_1, np.where(sources == 'wos', keys_2, None))
+        corpus = ' '.join(ref.lower() for ref in self.u_ref)
         matched_indices = []
         for i, key in enumerate(keys):
             if (key and key.strip()):
@@ -2710,8 +3030,8 @@ class pbx_probe():
                         matched_indices.append(i)
                 except:
                     pass
-        insd_r      = []
-        insd_t      = []
+        insd_r = []
+        insd_t = []
         u_ref_lower = [ref.lower() for ref in self.u_ref]
         for i in matched_indices:
             key = keys[i]
@@ -5663,35 +5983,44 @@ class pbx_probe():
         data                     = np.ones(len(row_indices), dtype = np.float32)
         sparse_matrix            = csr_matrix((data, (row_indices, col_indices)), shape = (num_rows, num_cols), dtype = np.float32)
         self.matrix_r            = pd.DataFrame.sparse.from_spmatrix(sparse_matrix, columns = self.u_ref)
-        self.labels_r            = [f'r_{i}' for i in range(0, num_cols)]
-        sources                  = self.data['source'].str.lower()
-        keys_1                   = self.data['title'].str.lower().str.replace('[', '', regex = False).str.replace(']', '', regex = False).tolist()
-        keys_2                   = self.data['doi'].str.lower().tolist()
-        keys                     = np.where(sources.isin(['scopus', 'pubmed']), keys_1, np.where(sources == 'wos', keys_2, None))
-        corpus                   = ' '.join(ref.lower() for ref in self.u_ref)
-        matched_indices          = []
-        for i, key in enumerate(keys):
-            if (key and key.strip()):
-                try:
-                    compiled_regex = re.compile(key)
-                    if (re.search(compiled_regex, corpus)):
-                        matched_indices.append(i)
-                except:
-                    pass
-        insd_r      = []
-        insd_t      = []
-        u_ref_lower = [ref.lower() for ref in self.u_ref]
-        for i in matched_indices:
-            key = keys[i]
-            for j, ref in enumerate(u_ref_lower):
-                if (re.search(key, ref)):
-                    insd_r.append(f'r_{j}')
-                    insd_t.append(str(i))
-                    self.dy_ref[j] = int(self.dy[i])
-                    break
-        self.dict_lbs         = dict(zip(insd_r, insd_t))
-        self.dict_lbs.update({label: label for label in self.labels_r if label not in self.dict_lbs})
-        self.labels_r         = [self.dict_lbs.get(label, label) for label in self.labels_r]
+        self.labels_r = [f'r_{i}' for i in range(0, num_cols)]
+        sources = self.data['source'].fillna('').astype(str).str.lower()
+        is_openalex = (
+            ('cr_openalex' in self.data.columns or 'CR_OPENALEX' in self.data.columns)
+            and ('openalex_id' in self.data.columns or 'UT' in self.data.columns)
+            and sources.eq('openalex').all()
+        )
+        if (is_openalex and hasattr(self, 'u_ref_id') and len(self.u_ref_id) == len(self.labels_r)):
+            self.dict_lbs = dict(zip(self.labels_r, self.u_ref_id))
+            self.labels_r = list(self.u_ref_id)
+        else:
+            keys_1 = self.data['title'].str.lower().str.replace('[', '', regex = False).str.replace(']', '', regex = False).tolist()
+            keys_2 = self.data['doi'].str.lower().tolist()
+            keys = np.where(sources.isin(['scopus', 'pubmed']), keys_1, np.where(sources == 'wos', keys_2, None))
+            corpus = ' '.join(ref.lower() for ref in self.u_ref)
+            matched_indices = []
+            for i, key in enumerate(keys):
+                if (key and key.strip()):
+                    try:
+                        compiled_regex = re.compile(key)
+                        if (re.search(compiled_regex, corpus)):
+                            matched_indices.append(i)
+                    except:
+                        pass
+            insd_r = []
+            insd_t = []
+            u_ref_lower = [ref.lower() for ref in self.u_ref]
+            for i in matched_indices:
+                key = keys[i]
+                for j, ref in enumerate(u_ref_lower):
+                    if (re.search(key, ref)):
+                        insd_r.append(f'r_{j}')
+                        insd_t.append(str(i))
+                        self.dy_ref[j] = int(self.dy[i])
+                        break
+            self.dict_lbs = dict(zip(insd_r, insd_t))
+            self.dict_lbs.update({label: label for label in self.labels_r if label not in self.dict_lbs})
+            self.labels_r = [self.dict_lbs.get(label, label) for label in self.labels_r]
         self.matrix_r.columns = self.labels_r
         if (local_nodes):
             mask          = ~self.matrix_r.columns.str.contains('r_')
@@ -5940,10 +6269,23 @@ class pbx_probe():
         go, ps, pio = _get_plotly()
         if (view == 'browser'):
             pio.renderers.default = 'browser'
-        lat_             = [self.country_lat_long[i][0] for i in range(0, len(self.country_lat_long)) if self.country_names[i] in self.u_ctr]
-        lon_             = [self.country_lat_long[i][1] for i in range(0, len(self.country_lat_long)) if self.country_names[i] in self.u_ctr]
-        iso_3            = [self.country_alpha_3[i] for i in range(0, len(self.country_lat_long)) if self.country_names[i] in self.u_ctr]
-        text             = [item for item in self.country_names if item in self.u_ctr]
+        geo_nodes = []
+        seen_countries = set()
+        for country_name in self.country_names:
+            if country_name in self.u_ctr:
+                geo = self._country_geo_record(country_name)
+                if geo is not None:
+                    geo_nodes.append(geo)
+                    seen_countries.add(geo['name'])
+        for country_name in self.u_ctr:
+            geo = self._country_geo_record(country_name)
+            if (geo is not None) and (geo['name'] not in seen_countries):
+                geo_nodes.append(geo)
+                seen_countries.add(geo['name'])
+        lat_             = [item['lat'] for item in geo_nodes]
+        lon_             = [item['lon'] for item in geo_nodes]
+        iso_3            = [item['iso3'] for item in geo_nodes]
+        text             = [item['name'] for item in geo_nodes]
         self.__adjacency_matrix_ctr(1)
         adjacency_matrix = self.matrix_a.values
         try:
@@ -5977,6 +6319,7 @@ class pbx_probe():
         Ya         = []
         Xb         = []
         Yb         = []
+        highlight_countries = set([self._resolve_country_name(item).lower() for item in country_lst if self._resolve_country_name(item) != 'UNKNOWN'])
         for i in range(0, len(edges)):
             srt, end = edges[i]
             srt      = 'c_'+str(srt)
@@ -5985,25 +6328,22 @@ class pbx_probe():
             end      = self.dict_id_ctr[end]
             self.ask_gpt_map.iloc[i, 0] = srt
             self.ask_gpt_map.iloc[i, 1] = end
-            if (len(country_lst) > 0):
-                country_lst = [item.lower() for item in country_lst]
-                for j in range(0, len(country_lst)):
-                    if (srt.lower() in country_lst or end.lower() in country_lst):
-                        srt_ = self.country_names.index(srt)
-                        end_ = self.country_names.index(end)
-                        Xb.append(self.country_lat_long[srt_][0]) 
-                        Xb.append(self.country_lat_long[end_][0]) 
-                        Xb.append(None)
-                        Yb.append(self.country_lat_long[srt_][1])
-                        Yb.append(self.country_lat_long[end_][1])
-                        Yb.append(None)
-            srt = self.country_names.index(srt)
-            end = self.country_names.index(end)
-            Xa.append(self.country_lat_long[srt][0]) 
-            Xa.append(self.country_lat_long[end][0]) 
+            srt_geo = self._country_geo_record(srt)
+            end_geo = self._country_geo_record(end)
+            if (srt_geo is None) or (end_geo is None):
+                continue
+            if (len(highlight_countries) > 0) and ((srt_geo['name'].lower() in highlight_countries) or (end_geo['name'].lower() in highlight_countries)):
+                Xb.append(srt_geo['lat']) 
+                Xb.append(end_geo['lat']) 
+                Xb.append(None)
+                Yb.append(srt_geo['lon'])
+                Yb.append(end_geo['lon'])
+                Yb.append(None)
+            Xa.append(srt_geo['lat']) 
+            Xa.append(end_geo['lat']) 
             Xa.append(None)
-            Ya.append(self.country_lat_long[srt][1])
-            Ya.append(self.country_lat_long[end][1])
+            Ya.append(srt_geo['lon'])
+            Ya.append(end_geo['lon'])
             Ya.append(None) 
         data   = dict(type                  = 'choropleth',
                       locations             = iso_3,

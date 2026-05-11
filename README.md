@@ -58,21 +58,20 @@ General Capabilities:
 - i) Creates a **WordCloud** from the Abstracts, Titles, Authors Keywords or Keywords Plus
 - j) Creates a **N-Gram Bar Plot (interactive plot)** from the Abstracts, Titles, Authors Keywords or Keywords Plus
 - k) Creates a **Projection (interactive plot)** of the documents based on the Abstracts, Titles, Authors Keywords or Keywords Plus
-- l) Creates an **Evolution Plot (interactive plot)** based on Abstracts, Titles, Sources, Authors Keywords or Keywords Plus
-- m) Creates an **Evolution Plot Complement (interactive plot)** based on Abstracts, Titles, Sources, Authors Keywords or Keywords Plus
-- n) Creates a **Sankey Diagram (interactive plot)** with any combination of the following keys: Authors, Countries, Institutions, Journals, Auhors_Keywords, Keywords_Plus, and/or Languages
-- o) Creates a **XY Bar Chart (interactive plot)** that displays the count of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Country
-- p) Creates a **XY Heatmap (interactive plot)** that displays the count and papers' ID of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Authors_Keywords and the papers associated to them.
-- q) Creates a **TreeMap (interactive plot)** from the Authors, Countries, Institutions, Journals, Auhors_Keywords, or Keywords_Plus
-- r) Creates an **Authors Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each author
-- s) Creates a **Countries Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each country (each author's country)
-- t) Creates a **Institutions Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each institution (each author's institution)
-- u) Creates a **Sources Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each source (journal)
-- v) Creates a **Bar Plot (interactive plot)**  for the following statistics: Documents per Year, Citations per Year, Past Citations per Year, Lotka's Law, Sources per Documents, Sources per Citations, Authors per Documents, Authors per Citations, Authors per H-Index, Bradford's Law (Core Sources 1, 2 or 3), Institutions per Documents, Institutions per Citations, Countries per Documents, Countries per Citations, Language per Documents, Keywords Plus per Documents and Authors' Keywords per Documents
-- w) Creates a **Top Reference Plot (interactive plot)** to visualize the top cited References
-- x) Creates a **Citation Trajectory Plot (interactive plot)**  that shows the yearly citation counts for each selected Reference
-- y) Creates a **Citation Matrix** that shows for each Reference, which citing articles (with their publication years) mentioned that Reference, the Unique Reference ID, and the Reference's publication year
-- z) Creates a **RPYS-Reference Publication Year Spectroscopy (interactive plot)** to visualize citation patterns over the years. Revealing the peaks in reference publication years (trough Gaussian Filters) that might indicate influential works or shifts in research trends
+- l) Creates a **Term Growth Plot  (interactive plot)** showing the temporal evolution of terms from Abstracts, Titles, Sources, Author Keywords, or Keywords Plus.
+- m) Creates a **Sankey Diagram (interactive plot)** with any combination of the following keys: Authors, Countries, Institutions, Journals, Auhors_Keywords, Keywords_Plus, and/or Languages
+- n) Creates a **XY Bar Chart (interactive plot)** that displays the count of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Country
+- o) Creates a **XY Heatmap (interactive plot)** that displays the count and papers' ID of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Authors_Keywords and the papers associated to them.
+- p) Creates a **TreeMap (interactive plot)** from the Authors, Countries, Institutions, Journals, Auhors_Keywords, or Keywords_Plus
+- q) Creates an **Authors Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each author
+- r) Creates a **Countries Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each country (each author's country)
+- s) Creates a **Institutions Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each institution (each author's institution)
+- t) Creates a **Sources Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each source (journal)
+- u) Creates a **Bar Plot (interactive plot)**  for the following statistics: Documents per Year, Citations per Year, Past Citations per Year, Lotka's Law, Sources per Documents, Sources per Citations, Authors per Documents, Authors per Citations, Authors per H-Index, Bradford's Law (Core Sources 1, 2 or 3), Institutions per Documents, Institutions per Citations, Countries per Documents, Countries per Citations, Language per Documents, Keywords Plus per Documents and Authors' Keywords per Documents
+- v) Creates a **Top Reference Plot (interactive plot)** to visualize the top cited References
+- w) Creates a **Citation Trajectory Plot (interactive plot)**  that shows the yearly citation counts for each selected Reference
+- x) Creates a **Citation Matrix** that shows for each Reference, which citing articles (with their publication years) mentioned that Reference, the Unique Reference ID, and the Reference's publication year
+- y) Creates a **RPYS-Reference Publication Year Spectroscopy (interactive plot)** to visualize citation patterns over the years. Revealing the peaks in reference publication years (trough Gaussian Filters) that might indicate influential works or shifts in research trends
 
 Network Capabilities:
 - a) Creates a **Top Reference Set Matrix**, which, for a given group size n, identifies and returns the most frequently co-cited Reference groups of size n
@@ -86,6 +85,7 @@ Network Capabilities:
 - i) **Similarity Analysis (interactive plot)** can be performed using coupling or cocitation methods
 - j) **World Map Collaboration Analysis (interactive plot)** between Countries in a Map
 - k) **Main Path Analysis** identifies the main citation backbone of the field using search path methods such as SPC, SPLC, or SPNP
+- l) Creates a **Temporal Scholarly Graph Explorer (interactive HTML plot)** to explore the bibliometric dataset as a heterogeneous temporal graph. It supports **timeline**, **force**, and **ego** views; allows centering the analysis on papers, references, authors, journals, institutions, countries, authors' keywords, or keywords plus; and can export a standalone **HTML** file for interactive exploration.
 
 Scientometric Capabilities:
 - a) Computes **Reference Diversity** indicators for papers, such as breadth and temporal diversity of cited references
@@ -136,9 +136,10 @@ pip install pybibx
 - Example 05: Scopus + WOS             ([ Colab Demo ](https://colab.research.google.com/drive/1DqEk0_IakJPfIZDVcnTWBE_nxyhW9p-W?usp=sharing))
 - Example 06: WOS + Scopus             ([ Colab Demo ](https://colab.research.google.com/drive/12k_IOcSDwumbEtPqqSMbCIE6ZypgKAJn?usp=sharing))
 - Example 07: Scopus + WOS + Pubmed    ([ Colab Demo ](https://colab.research.google.com/drive/1Ko6AibkXtB_Kwg3Eu0fhzNMVEIXPkbez?usp=sharing))
-- Example 08: Your Own                 ([ Colab Demo ](https://colab.research.google.com/drive/19EYjgal9V1kemmzpHnyp6MSlk9S-kGHT?usp=sharing))
-- Example 09: **Ask chatGPT** Analysis ([ Colab Demo ](https://colab.research.google.com/drive/1LMrR49F54MuX-stlrQbrrjX_dEU3kZ8Y?usp=sharing))
-- Example 10: **Ask Gemini** Analysis  ([ Colab Demo ](https://colab.research.google.com/drive/1oEJBfCml_OMgmSTicMOB-FKMaR2FtoG3?usp=sharing))
+- Example 08: Temporal Scholarly Graph ([ Colab Demo ](https://colab.research.google.com/drive/11TlUCTBJS0yYzsO4ppbWK0oJpDW69rkJ?usp=sharing))
+- Example 09: Your Own                 ([ Colab Demo ](https://colab.research.google.com/drive/19EYjgal9V1kemmzpHnyp6MSlk9S-kGHT?usp=sharing))
+- Example 10: **Ask chatGPT** Analysis ([ Colab Demo ](https://colab.research.google.com/drive/1LMrR49F54MuX-stlrQbrrjX_dEU3kZ8Y?usp=sharing))
+- Example 11: **Ask Gemini** Analysis  ([ Colab Demo ](https://colab.research.google.com/drive/1oEJBfCml_OMgmSTicMOB-FKMaR2FtoG3?usp=sharing))
 
 # Acknowledgement 
 This section indicates the libraries that inspired pybibx

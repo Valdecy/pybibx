@@ -10,7 +10,7 @@ Or run standalone:
     python app.py
 """
 
-import os, sys, json, base64, threading, webbrowser, tempfile, traceback
+import os, sys, json, base64, threading, webbrowser, tempfile, traceback, re
 from io import BytesIO, StringIO
 from contextlib import redirect_stdout
 
@@ -862,6 +862,31 @@ def evolution():
     ))
 
 
+@app.route('/api/term_growth', methods=['POST'])
+def term_growth():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d = request.json or {}
+    lang = d.get('lang', '')
+    source = d.get('source', 'kwa')
+    if isinstance(source, str):
+        source = [x.strip() for x in source.split(',') if x.strip()]
+    if not source:
+        source = ['kwa']
+    return jsonify(run_fn(STATE['pbx'].term_growth,
+        source=source,
+        topn=int(d.get('topn', 10)),
+        cumulative=bool(d.get('cumulative', True)),
+        stop_words=_stop_words_arg(lang),
+        rmv_custom_words=_split_csv(d.get('rmv_words', '')),
+        start=int(d.get('start', -1)),
+        end=int(d.get('end', -1)),
+        line=bool(d.get('line', True)),
+        bubble=bool(d.get('bubble', True)),
+        view='browser'
+    ))
+
+
 @app.route('/api/sankey', methods=['POST'])
 def sankey():
     if not STATE['pbx']:
@@ -1454,7 +1479,14 @@ body{background:var(--bg);color:var(--tx);font-family:var(--body);font-size:14px
 
 /* OUTPUT TAB */
 #tab-results{padding:16px;}
+#tab-tsg{padding:16px;}
 #output-body{height:100%;}
+#tsg-body{height:100%;}
+#empty-tsg{display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;color:var(--tx3);gap:10px;}
+#empty-tsg .e-icon{font-size:32px;opacity:.4;}
+#empty-tsg p{font-size:12px;font-family:var(--mono);}
+.tsg-shell{display:flex;flex-direction:column;gap:10px;}
+.tsg-stats{font-size:12px;font-family:var(--mono);color:var(--tx2);padding:10px 12px;border:1px solid var(--bdr);border-radius:14px;background:linear-gradient(180deg,var(--sur2),var(--sur));}
 #output-body::-webkit-scrollbar{width:4px;}
 #output-body::-webkit-scrollbar-thumb{background:var(--bdr2);}
 
@@ -1472,6 +1504,8 @@ body{background:var(--bg);color:var(--tx);font-family:var(--body);font-size:14px
 .out-panel{display:none;padding:0;}
 .out-panel.active{display:block;}
 .plotly-out{width:100%;height:520px;}
+.html-out-frame{display:block;width:100%;height:calc(100vh - 190px);min-height:640px;border:0;background:#060b16;}
+.html-stats{padding:10px 12px;background:var(--bg);color:var(--tx2);font-family:var(--mono);font-size:11px;border-bottom:1px solid var(--bdr);}
 .img-out{display:block;width:100%;border-radius:0;}
 #spinner-overlay{position:fixed;inset:0;background:rgba(2,6,23,.62);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:9999;padding:24px;}
 #spinner-overlay.show{display:flex;}
@@ -1708,6 +1742,9 @@ select option{background:var(--sur);}
     <div class="nav-item disabled" data-view="network" onclick="showView('network',this)">
       <span class="nav-ico">🌐</span> Networks
     </div>
+    <div class="nav-item disabled" data-view="temporal" onclick="showView('temporal',this)">
+      <span class="nav-ico">🧭</span> Temporal Scholarly Graph
+    </div>
     <div class="nav-item disabled" data-view="references" onclick="showView('references',this)">
       <span class="nav-ico">📚</span> References
     </div>
@@ -1747,6 +1784,7 @@ select option{background:var(--sur);}
     <button class="tab-btn" id="tbtn-dataset" onclick="switchTab('dataset')" style="display:none">🧾 Dataset</button>
     <button class="tab-btn" id="tbtn-objects" onclick="switchTab('objects')" style="display:none">🗂 Objects &amp; IDs</button>
     <button class="tab-btn" id="tbtn-results" onclick="switchTab('results')">📊 Results <span class="tab-badge" id="results-badge" style="display:none">0</span></button>
+    <button class="tab-btn" id="tbtn-tsg" onclick="switchTab('tsg')">🧭 TSG Viewer</button>
     <button id="clear-btn" onclick="clearOutput()">clear results</button>
   </div>
 
@@ -1855,7 +1893,8 @@ select option{background:var(--sur);}
           <div class="fn-card" onclick="selectParams('ngrams','visuals',this)"><div class="fn-card-icon">📊</div><div class="fn-card-name">N-Grams</div><div class="fn-card-desc">Top unigrams, bigrams, or trigrams</div></div>
           <div class="fn-card" onclick="selectParams('treemap','visuals',this)"><div class="fn-card-icon">🗂</div><div class="fn-card-name">TreeMap</div><div class="fn-card-desc">Proportional area map for keywords/authors</div></div>
           <div class="fn-card" onclick="selectParams('bars','visuals',this)"><div class="fn-card-icon">📈</div><div class="fn-card-name">Bar Charts</div><div class="fn-card-desc">Documents per year, Lotka's law, Bradford's law</div></div>
-          <div class="fn-card" onclick="selectParams('evolution','visuals',this)"><div class="fn-card-icon">🌊</div><div class="fn-card-name">Evolution Plot</div><div class="fn-card-desc">Topic/keyword trends over time</div></div>
+          <!-- <div class="fn-card" onclick="selectParams('evolution','visuals',this)"><div class="fn-card-icon">🌊</div><div class="fn-card-name">Evolution Plot</div><div class="fn-card-desc">Topic/keyword trends over time</div></div> -->
+          <div class="fn-card" onclick="selectParams('term_growth','visuals',this)"><div class="fn-card-icon">📈</div><div class="fn-card-name">Term Growth</div><div class="fn-card-desc">Yearly growth for keywords, title terms, or abstract terms</div></div>
           <div class="fn-card" onclick="selectParams('sankey','visuals',this)"><div class="fn-card-icon">🔀</div><div class="fn-card-name">Sankey Diagram</div><div class="fn-card-desc">Flow between authors, countries, keywords</div></div>
           <div class="fn-card" onclick="selectParams('productivity','visuals',this)"><div class="fn-card-icon">📅</div><div class="fn-card-name">Productivity</div><div class="fn-card-desc">Yearly output per author/country/journal</div></div>
           <div class="fn-card" onclick="selectParams('projection','visuals',this)"><div class="fn-card-icon">🔵</div><div class="fn-card-name">Doc Projection</div><div class="fn-card-desc">2D document clustering by TF-IDF or embeddings</div></div>
@@ -1874,12 +1913,23 @@ select option{background:var(--sur);}
           <div class="fn-card" onclick="selectParams('map','network',this)"><div class="fn-card-icon">🗺</div><div class="fn-card-name">World Map</div><div class="fn-card-desc">Country collaboration on a geographic map</div></div>
           <div class="fn-card" onclick="selectParams('sim','network',this)"><div class="fn-card-icon">🔗</div><div class="fn-card-name">Similarity Network</div><div class="fn-card-desc">Bibliographic coupling or co-citation</div></div>
           <div class="fn-card" onclick="selectParams('hist','network',this)"><div class="fn-card-icon">🕰</div><div class="fn-card-name">Historiograph</div><div class="fn-card-desc">Direct citation chain over time</div></div>
+
           <div class="fn-card" onclick="selectParams('mainpath','network',this)"><div class="fn-card-icon">🛤️</div><div class="fn-card-name">Main Path Analysis</div><div class="fn-card-desc">Core knowledge-flow path in the citation network</div></div>
           <div class="fn-card" onclick="selectParams('adjdir','network',this)"><div class="fn-card-icon">🧭</div><div class="fn-card-name">Directed Citation Network</div><div class="fn-card-desc">Local vs cited references in a directed citation graph</div></div>
           <div class="fn-card" onclick="selectParams('finddir','network',this)"><div class="fn-card-icon">🎯</div><div class="fn-card-name">Highlight Citation Nodes</div><div class="fn-card-desc">Focus on specific article IDs or reference IDs</div></div>
           <div class="fn-card" onclick="selectParams('salsa','network',this)"><div class="fn-card-icon">💃</div><div class="fn-card-name">SALSA</div><div class="fn-card-desc">Hub and authority analysis across decades</div></div>
         </div>
         <div class="fn-hint">Click any function card to configure its parameters →</div>
+      </div>
+
+      <!-- ── TEMPORAL SG ── -->
+      <div class="view" id="view-temporal">
+        <div class="view-title">Temporal Scholarly Graph</div>
+        <div class="view-desc">Paper-centred temporal explorer with citations, authors, keywords, references, and multi-lens navigation.</div>
+        <div class="fn-grid">
+          <div class="fn-card" onclick="selectParams('temporal_sg','temporal',this)"><div class="fn-card-icon">🧭</div><div class="fn-card-name">TSG Builder</div><div class="fn-card-desc">Open the dedicated temporal graph workspace in its own tab</div></div>
+        </div>
+        <div class="fn-hint">Configure the graph parameters →</div>
       </div>
 
       <!-- ── REFERENCES ── -->
@@ -2074,6 +2124,7 @@ select option{background:var(--sur);}
       </div>
 
       <!-- EVOLUTION -->
+      <!--
       <div class="params-section" id="params-evolution">
         <div class="params-box">
           <div class="params-title">Evolution Plot Parameters</div>
@@ -2086,6 +2137,25 @@ select option{background:var(--sur);}
           </div>
           <div class="callout info" style="margin-bottom:10px;">Adjust the year range to match your dataset's publication span to avoid errors.</div>
           <button class="run-btn" onclick="runEvolution(this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+      -->
+      <!-- TERM GROWTH -->
+      <div class="params-section" id="params-term_growth">
+        <div class="params-box">
+          <div class="params-title">Term Growth Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Source</label><select id="tg-source"><option value="kwa" selected>Authors Keywords</option><option value="kwp">Keywords Plus</option><option value="title">Title Terms</option><option value="abs">Abstract Terms</option></select></div>
+            <div class="param-item"><label class="fl">Top N</label><input type="number" id="tg-topn" value="10"/></div>
+            <div class="param-item"><label class="fl">Year start</label><input type="number" id="tg-start" value="-1"/></div>
+            <div class="param-item"><label class="fl">Year end</label><input type="number" id="tg-end" value="-1"/></div>
+            <div class="param-item"><label class="fl">Stopword language</label><select id="tg-lang"><option value="ar">Arabic</option><option value="bn">Bengali</option><option value="bg">Bulgarian</option><option value="zh">Chinese</option><option value="cs">Czech</option><option value="en" selected>English</option><option value="fi">Finnish</option><option value="fr">French</option><option value="de">German</option><option value="el">Greek</option><option value="he">Hebrew</option><option value="hi">Hindi</option><option value="hu">Hungarian</option><option value="it">Italian</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="mr">Marathi</option><option value="fa">Persian</option><option value="pl">Polish</option><option value="pt-br">Portuguese (Brazil)</option><option value="ro">Romanian</option><option value="ru">Russian</option><option value="sk">Slovak</option><option value="es">Spanish</option><option value="sv">Swedish</option><option value="th">Thai</option><option value="uk">Ukrainian</option></select></div>
+            <div class="param-item"><label class="fl">Remove words (comma-sep)</label><input type="text" id="tg-rmv" placeholder="study, paper, analysis"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="tg-cumulative" checked/><span>Cumulative</span></div>
+          <div class="checkbox-row"><input type="checkbox" id="tg-line" checked/><span>Line plot</span></div>
+          <div class="checkbox-row"><input type="checkbox" id="tg-bubble" checked/><span>Bubble timeline</span></div>
+          <button class="run-btn" onclick="runTermGrowth(this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
         </div>
       </div>
 
@@ -2199,6 +2269,21 @@ select option{background:var(--sur);}
       </div>
 
       <!-- REFS: TOP -->
+      <div class="params-section" id="params-temporal_sg">
+        <div class="params-box">
+          <div class="params-title">Temporal Scholarly Graph Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Initial view</label><select id="tsg-view"><option value="timeline">Timeline</option><option value="force">Force</option><option value="ego">Ego</option></select></div>
+            <div class="param-item"><label class="fl">Graph center</label><select id="tsg-center"><option value="paper">Paper</option><option value="journal">Journal</option><option value="author">Author</option><option value="institution">Institution</option><option value="country">Country</option><option value="reference">Reference</option><option value="author_keyword">Authors' keyword</option><option value="keyword_plus">Keyword Plus</option></select></div>
+            <div class="param-item"><label class="fl">Max papers</label><input id="tsg-maxp" type="number" value="500" min="50" max="5000"/></div>
+            <div class="param-item"><label class="fl">Max references</label><input id="tsg-maxr" type="number" value="300" min="20" max="3000"/></div>
+            <div class="param-item"><label class="fl">Start year</label><input id="tsg-start" type="number" placeholder="auto"/></div>
+            <div class="param-item"><label class="fl">End year</label><input id="tsg-end" type="number" placeholder="auto"/></div>
+          </div>
+          <button class="run-btn" onclick="runTemporalSG(this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>Open Temporal Scholarly Graph</button>
+        </div>
+      </div>
+
       <div class="params-section" id="params-top_refs">
         <div class="params-box">
           <div class="params-title">Top References Parameters</div>
@@ -2637,6 +2722,16 @@ select option{background:var(--sur);}
       </div>
     </div>
 
+    <!-- ════ TAB: TEMPORAL Scholarly GRAPH ════ -->
+    <div id="tab-tsg" class="tab-pane">
+      <div id="tsg-body">
+        <div id="empty-tsg">
+          <div class="e-icon">🧭</div>
+          <p>Run the Temporal Scholarly Graph to open it here</p>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /body -->
 </div><!-- /main -->
 
@@ -2661,7 +2756,7 @@ let _currentAIArea = 'topics';
 
 // ══ Tab switching ══
 function switchTab(name){
-  ['functions','parameters','dataset','objects','results'].forEach(t=>{
+  ['functions','parameters','dataset','objects','results','tsg'].forEach(t=>{
     document.getElementById('tab-'+t).classList.toggle('active', t===name);
     document.getElementById('tbtn-'+t).classList.toggle('active', t===name);
   });
@@ -3424,7 +3519,7 @@ function showView(id, el, aiArea=null){
   if(el) el.classList.add('active');
   const titles = {
     upload:'Upload Data', dataset:'Dataset & Reports', visuals:'Visualizations',
-    network:'Network Analysis', references:'Reference Analysis',
+    network:'Network Analysis', temporal:'Temporal Scholarly Graph', references:'Reference Analysis',
     profiling:'Entity Profiling', ai:'AI & Tools'
   };
   const subs = {
@@ -3432,6 +3527,7 @@ function showView(id, el, aiArea=null){
     dataset:'EDA, health report, and editable dataset synchronization',
     visuals:'Interactive charts and document projections',
     network:'Co-authorship, keywords, and citation networks',
+    temporal:'Dedicated paper-centred temporal explorer with its own workspace tab',
     references:'Citation patterns, RPYS, and trajectories',
     profiling:'Profile entities or compute H, G, E, J, and M indices',
     ai:'Topic modelling, word-level analysis, and concise topic summaries'
@@ -3623,7 +3719,8 @@ function runWordcloud(btn){ runAndDisplay('/api/wordcloud',{entry:document.getEl
 function runNgrams(btn){ runAndDisplay('/api/ngrams',{entry:document.getElementById('ng-entry').value,ngrams:document.getElementById('ng-n').value,wordsn:document.getElementById('ng-topn').value,lang:document.getElementById('ng-lang').value,rmv_words:document.getElementById('ng-rmv').value},btn,'N-Grams'); }
 function runTreemap(btn){ runAndDisplay('/api/treemap',{entry:document.getElementById('tm-entry').value,topn:document.getElementById('tm-topn').value},btn,'TreeMap'); }
 function runBars(btn){ runAndDisplay('/api/bars',{statistic:document.getElementById('bars-stat').value,topn:document.getElementById('bars-topn').value},btn,'Bar Chart'); }
-function runEvolution(btn){ runAndDisplay('/api/evolution',{key:document.getElementById('ev-key').value,topn:document.getElementById('ev-topn').value,start:document.getElementById('ev-start').value,end:document.getElementById('ev-end').value,lang:document.getElementById('ev-lang').value},btn,'Evolution'); }
+// function runEvolution(btn){ runAndDisplay('/api/evolution',{key:document.getElementById('ev-key').value,topn:document.getElementById('ev-topn').value,start:document.getElementById('ev-start').value,end:document.getElementById('ev-end').value,lang:document.getElementById('ev-lang').value},btn,'Evolution'); }
+function runTermGrowth(btn){ runAndDisplay('/api/term_growth',{source:document.getElementById('tg-source').value,topn:document.getElementById('tg-topn').value,cumulative:document.getElementById('tg-cumulative').checked,lang:document.getElementById('tg-lang').value,rmv_words:document.getElementById('tg-rmv').value,start:document.getElementById('tg-start').value,end:document.getElementById('tg-end').value,line:document.getElementById('tg-line').checked,bubble:document.getElementById('tg-bubble').checked},btn,'Term Growth'); }
 
 function sankeyLayerRow(idx, withRemove=true){
   const removeBtn = withRemove
@@ -3661,6 +3758,7 @@ function initSankeyBuilder(){
   const host = document.getElementById('sankey-builder');
   if(!host || host.dataset.ready==='1') return;
   host.innerHTML = sankeyLayerRow(0,false) + sankeyLayerRow(1,false);
+  host.querySelectorAll('.sk-entry')[1].value = 'lan';
   host.dataset.ready='1';
 }
 function addSankeyLayer(){
@@ -3702,6 +3800,28 @@ function runCross(kind, btn){
     heatmap_y_x: {kind:'heatmap_y_x',x:document.getElementById('hxy-x').value,y:document.getElementById('hxy-y').value,topn_x:document.getElementById('hxy-topx').value,topn_y:document.getElementById('hxy-topy').value,element_x:document.getElementById('hxy-ex').value,element_y:document.getElementById('hxy-ey').value,rmv_unknowns:document.getElementById('hxy-rmv').checked}
   };
   runAndDisplay('/api/cross', bodies[kind]||{kind}, btn, kind==='count_y_x' ? 'Count Y per X' : 'Heatmap Y per X');
+}
+
+async function runTemporalSG(btn){
+  setLoading(btn, true);
+  showSpinner('Temporal Scholarly Graph running…');
+  try{
+    const d = await post('/api/temporal_sg', {
+      view: document.getElementById('tsg-view').value,
+      center: document.getElementById('tsg-center').value,
+      max_papers: document.getElementById('tsg-maxp').value,
+      max_references: document.getElementById('tsg-maxr').value,
+      start_year: document.getElementById('tsg-start').value,
+      end_year: document.getElementById('tsg-end').value
+    });
+    hideSpinner();
+    if(!d.ok){ appendError(d.error+'\n\n'+(d.trace||'')); toast('Error: '+d.error,'err'); switchTab('results'); return; }
+    renderTemporalSG(d);
+    if(d.docs) document.getElementById('stat-docs').textContent = d.docs;
+    toast('✓ Done','ok');
+    switchTab('tsg');
+  }catch(e){ hideSpinner(); toast('Error: '+e.message,'err'); appendError(e.message); switchTab('results'); }
+  finally{ setLoading(btn, false); }
 }
 
 // ── Networks ──
@@ -4054,6 +4174,34 @@ function downloadTableFile(filename, tableEl){
   triggerDownload(sanitizeDownloadName(filename, 'table') + '.csv', tableElementToCSV(tableEl), 'text/csv;charset=utf-8');
 }
 
+function renderTemporalSG(d){
+  const body = document.getElementById('tsg-body');
+  const oldFrame = body.querySelector('iframe');
+  if(oldFrame) oldFrame.srcdoc = '';
+  body.innerHTML = '';
+
+  const shell = document.createElement('div');
+  shell.className = 'tsg-shell';
+
+  if(d.stats){
+    const stats = document.createElement('div');
+    stats.className = 'tsg-stats';
+    const parts = [];
+    if(d.stats.papers != null) parts.push(`${Number(d.stats.papers).toLocaleString()} papers`);
+    if(d.stats.nodes != null) parts.push(`${Number(d.stats.nodes).toLocaleString()} nodes`);
+    if(d.stats.edges != null) parts.push(`${Number(d.stats.edges).toLocaleString()} edges`);
+    stats.textContent = parts.length ? parts.join(' · ') : 'Interactive temporal graph';
+    shell.appendChild(stats);
+  }
+
+  const iframe = document.createElement('iframe');
+  iframe.className = 'html-out-frame';
+  iframe.setAttribute('loading', 'lazy');
+  iframe.srcdoc = d.html || '';
+  shell.appendChild(iframe);
+  body.appendChild(shell);
+}
+
 function renderResult(d, label){
   const body = document.getElementById('output-body');
   document.getElementById('empty-out').style.display='none';
@@ -4134,6 +4282,26 @@ function renderResult(d, label){
     img.className = 'img-out';
     addPanel('chart', chartIndex === 0 && i === 0 ? 'Chart' : `Image ${i+1}`, img, panels.length === 0);
   });
+
+  if(d.html){
+    const wrap = document.createElement('div');
+    if(d.stats){
+      const stats = document.createElement('div');
+      stats.className = 'html-stats';
+      const parts = [];
+      if(d.stats.papers != null) parts.push(`${Number(d.stats.papers).toLocaleString()} papers`);
+      if(d.stats.nodes != null) parts.push(`${Number(d.stats.nodes).toLocaleString()} nodes`);
+      if(d.stats.edges != null) parts.push(`${Number(d.stats.edges).toLocaleString()} edges`);
+      stats.textContent = parts.length ? parts.join(' · ') : 'Interactive HTML result';
+      wrap.appendChild(stats);
+    }
+    const iframe = document.createElement('iframe');
+    iframe.className = 'html-out-frame';
+    iframe.setAttribute('loading', 'lazy');
+    iframe.srcdoc = d.html;
+    wrap.appendChild(iframe);
+    addPanel('html', 'Explorer', wrap, panels.length === 0);
+  }
 
   if(d.result && d.result.type === 'dataframe'){
     const wrap = document.createElement('div');
@@ -4218,6 +4386,8 @@ function hideSpinner(){ const sp=document.getElementById('spinner-overlay'); if(
 // ══ Clear ══
 function clearOutput(){
   document.getElementById('output-body').innerHTML='<div id="empty-out"><div class="e-icon">📭</div><p>Run an analysis to see results here</p></div>';
+  const tsgBody = document.getElementById('tsg-body');
+  if(tsgBody) tsgBody.innerHTML='<div id="empty-tsg"><div class="e-icon">🧭</div><p>Run the Temporal Scholarly Graph to open it here</p></div>';
   _resultCount=0;
   document.getElementById('results-badge').style.display='none';
   window._resultFilter = 'all';
@@ -4260,7 +4430,11 @@ const PARAM_HELP = {
   'ng-lang':'Optional stopword language. Leave blank to apply no predefined stopword list.',
   'ev-lang':'Optional stopword language. Leave blank to apply no predefined stopword list.',
   'ai-lang':'Optional stopword language. Leave blank to apply no predefined stopword list.',
-  'aiemb-lang':'Optional stopword language. Leave blank to apply no predefined stopword list.'
+  'aiemb-lang':'Optional stopword language. Leave blank to apply no predefined stopword list.',
+  'tsg-maxp':'Maximum number of dataset papers sent to the explorer. Higher values are richer but heavier.',
+  'tsg-maxr':'Maximum number of cited references represented as reference nodes.',
+  'tsg-start':'Optional lower bound for publication year. Leave blank for automatic.',
+  'tsg-end':'Optional upper bound for publication year. Leave blank for automatic.'
 };
 function addHelpTips(){
   Object.entries(PARAM_HELP).forEach(([id,tip])=>{
@@ -4301,7 +4475,7 @@ function sortSelectByText(id){
 function sortDropdowns(){
   [
     'dbsel','wc-entry','ng-entry','ng-lang','tm-entry','ev-key','ev-lang','pr-kind','pj-corpus','pj-lang','pj-method','pj-cm',
-    'adj-type','adj-centrality','adj-labeltype','sim-type','prof-kind','ai-lang','aiwe-lang','cxy-x','cxy-y','hxy-x','hxy-y','aiemb-corpus','aiemb-lang'
+    'adj-type','adj-centrality','adj-labeltype','sim-type','tsg-view','prof-kind','ai-lang','aiwe-lang','cxy-x','cxy-y','hxy-x','hxy-y','aiemb-corpus','aiemb-lang'
   ].forEach(sortSelectByText);
 }
 
@@ -4333,6 +4507,43 @@ fetch('/api/status').then(r=>r.json()).then(d=>{
 </body>
 </html>"""
 
+
+
+@app.route('/api/temporal_sg', methods=['POST'])
+def temporal_sg_route():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d   = request.json or {}
+    pbx = STATE['pbx']
+    try:
+        result = pbx.temporal_sg(
+            view                    = d.get('view', 'timeline'),
+            center                  = d.get('center', 'paper'),
+            max_papers              = int(d.get('max_papers', 500)),
+            max_references          = int(d.get('max_references', 300)),
+            color_by                = d.get('color_by', 'type'),
+            size_by                 = d.get('size_by', 'citations'),
+            start_year              = int(d['start_year']) if d.get('start_year') else None,
+            end_year                = int(d['end_year'])   if d.get('end_year')   else None,
+            notebook                = False,
+            open_browser            = False,
+            save_html               = None,
+            preview                 = True,
+        )
+        html = result['html']
+        html = re.sub(r'<button\s+class="ego-btn"[^>]*>.*?<\/button>', '', html, flags=re.IGNORECASE | re.DOTALL)
+        return jsonify({
+            'ok':   True,
+            'html': html,
+            'stats': {
+                'nodes':  len(result['nodes']),
+                'edges':  len(result['edges']),
+                'papers': len(result['papers']),
+            }
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
@@ -4399,6 +4610,7 @@ def web_stop():
 def launch(port=5173, open_browser=True):
     """Backward-compatible launcher."""
     return web_app(port=port, open_browser=open_browser)
+    
     
 if __name__ == "__main__":
     web_app()

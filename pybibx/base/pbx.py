@@ -3343,6 +3343,236 @@ class pbx_probe():
 
     ##############################################################################
     
+
+    # Function: Term Growth
+    def term_growth(self, source = 'kwa', topn = 10, cumulative = True, stop_words = ['en'], rmv_custom_words = [], start = -1, end = -1, line = True, bubble = True, view = 'browser'):
+        go, ps, pio = _get_plotly()
+        _require_dependency(pio, 'plotly', 'term growth plotting')
+
+        def _normalize_sources(value):
+            valid = {'kwa', 'kwp', 'title', 'abs'}
+            if isinstance(value, (list, tuple, set)):
+                raw_items = list(value)
+            else:
+                raw_text = str(value if value is not None else 'kwa').strip()
+                raw_text = raw_text.strip('[]()')
+                raw_text = raw_text.replace(';', ',')
+                raw_items = [item.strip() for item in raw_text.split(',') if item.strip()]
+            alias = {
+                'keyword': 'kwa', 'keywords': 'kwa', 'author_keyword': 'kwa', 'author_keywords': 'kwa', 'kwa': 'kwa',
+                'keyword_plus': 'kwp', 'keywords_plus': 'kwp', 'kwp': 'kwp',
+                'title': 'title', 'titles': 'title', 'ti': 'title',
+                'abstract': 'abs', 'abstracts': 'abs', 'ab': 'abs', 'abs': 'abs'
+            }
+            out = []
+            for item in raw_items or ['kwa']:
+                key = alias.get(str(item).strip().lower())
+                if key in valid and key not in out:
+                    out.append(key)
+            if len(out) == 0:
+                raise ValueError("source must contain at least one of ['abs', 'kwp', 'kwa', 'title']")
+            return out
+
+        def _label_sources(keys):
+            name_map = {'kwa': 'Author Keywords', 'kwp': 'Keywords Plus', 'title': 'Title Terms', 'abs': 'Abstract Terms'}
+            return ', '.join(name_map.get(key, str(key).upper()) for key in keys)
+
+        def _clean_keyword_list(items, rmv_set):
+            out = []
+            for item in items or []:
+                token = str(item).strip().lower()
+                if token == '' or token == 'unknown' or token in rmv_set:
+                    continue
+                out.append(token)
+            return sorted(set(out))
+
+        def _clean_text_terms(series, stop_words_arg, rmv_words_arg):
+            corpus = list(series.fillna('').astype(str).tolist())
+            corpus = self.clear_text(corpus, stop_words = stop_words_arg, lowercase = True, rmv_accents = True, rmv_special_chars = True, rmv_numbers = True, rmv_custom_words = list(rmv_words_arg))
+            docs = []
+            for text_ in corpus:
+                tokens = [tok.strip().lower() for tok in str(text_).split() if len(tok.strip()) > 2]
+                tokens = [tok for tok in tokens if tok not in rmv_words_arg and tok != 'unknown']
+                docs.append(sorted(set(tokens)))
+            return docs
+
+        def _resolve_year_bounds(start_arg, end_arg):
+            year_min = self.date_str
+            year_max = self.date_end
+            try:
+                start_val = int(start_arg)
+            except Exception:
+                start_val = -1
+            try:
+                end_val = int(end_arg)
+            except Exception:
+                end_val = -1
+            if start_val < year_min or start_val == -1:
+                start_val = year_min
+            if end_val > year_max or end_val == -1:
+                end_val = year_max
+            if end_val < start_val:
+                start_val, end_val = end_val, start_val
+            return start_val, end_val
+
+        if (view == 'browser'):
+            pio.renderers.default = 'browser'
+
+        try:
+            topn = int(topn)
+        except Exception:
+            raise ValueError('topn argument must be an integer')
+        if (topn <= 0):
+            raise ValueError('topn argument must be greater than zero')
+
+        sources = _normalize_sources(source)
+        source_label = _label_sources(sources)
+        cumulative = bool(cumulative)
+        line = bool(line)
+        bubble = bool(bubble)
+
+        year_start, year_end = _resolve_year_bounds(start, end)
+        years_all = pd.to_numeric(self.data['year'], errors = 'coerce').fillna(-1).astype(int).tolist()
+        valid_idx = [i for i, year_val in enumerate(years_all) if year_start <= int(year_val) <= year_end]
+        years = list(range(year_start, year_end + 1)) if year_end >= year_start else []
+        empty_df = pd.DataFrame(columns = ['year', 'term', 'count', 'cumulative_count', 'source'])
+        if len(valid_idx) == 0 or len(years) == 0:
+            return empty_df
+
+        rmv_set = {str(word).strip().lower() for word in (rmv_custom_words or []) if str(word).strip()}
+        rmv_set.add('unknown')
+        stop_words = stop_words if isinstance(stop_words, (list, tuple, set)) else [stop_words]
+
+        docs_terms = [set() for _ in range(self.data.shape[0])]
+        if 'kwa' in sources:
+            for idx2 in valid_idx:
+                docs_terms[idx2].update(_clean_keyword_list(self.auk[idx2] if idx2 < len(self.auk) else [], rmv_set))
+        if 'kwp' in sources:
+            for idx2 in valid_idx:
+                docs_terms[idx2].update(_clean_keyword_list(self.kid[idx2] if idx2 < len(self.kid) else [], rmv_set))
+        if 'title' in sources:
+            title_docs = _clean_text_terms(self.data['title'], stop_words, rmv_set)
+            for idx2 in valid_idx:
+                docs_terms[idx2].update(title_docs[idx2])
+        if 'abs' in sources:
+            abs_docs = _clean_text_terms(self.data['abstract'], stop_words, rmv_set)
+            for idx2 in valid_idx:
+                docs_terms[idx2].update(abs_docs[idx2])
+
+        counter = Counter()
+        for idx2 in valid_idx:
+            counter.update(docs_terms[idx2])
+        top_terms = [term for term, _ in counter.most_common(topn)]
+        if len(top_terms) == 0:
+            return empty_df
+
+        growth_counter = defaultdict(int)
+        for idx2 in valid_idx:
+            year_val = years_all[idx2]
+            for term in docs_terms[idx2]:
+                if term in top_terms:
+                    growth_counter[(year_val, term)] += 1
+
+        rows = []
+        for term in top_terms:
+            cumulative_value = 0
+            for year_val in years:
+                count_val = int(growth_counter.get((year_val, term), 0))
+                cumulative_value += count_val
+                rows.append({
+                    'year': year_val,
+                    'term': term,
+                    'count': count_val,
+                    'cumulative_count': cumulative_value,
+                    'source': source_label,
+                })
+        df = pd.DataFrame(rows, columns = ['year', 'term', 'count', 'cumulative_count', 'source'])
+        metric_col = 'cumulative_count' if cumulative else 'count'
+        metric_label = 'Cumulative Count' if cumulative else 'Count'
+
+        palette = ['#264653', '#2A9D8F', '#E9C46A', '#F4A261', '#E76F51', '#5B8E7D', '#7A6C5D', '#577590', '#B56576', '#6D597A', '#355070', '#43AA8B']
+        color_map = {term: palette[i % len(palette)] for i, term in enumerate(top_terms)}
+
+        if line:
+            fig_line = go.Figure()
+            for term in top_terms:
+                term_df = df[df['term'] == term]
+                fig_line.add_trace(go.Scatter(
+                    x = term_df['year'],
+                    y = term_df[metric_col],
+                    mode = 'lines+markers',
+                    name = term,
+                    line = dict(width = 3, color = color_map[term]),
+                    marker = dict(size = 8, color = color_map[term], line = dict(width = 1, color = '#ffffff')),
+                    customdata = np.column_stack([
+                        term_df['count'].to_numpy(),
+                        term_df['cumulative_count'].to_numpy(),
+                        term_df['source'].astype(str).to_numpy()
+                    ]),
+                    hovertemplate = '<b>%{fullData.name}</b><br>Year: %{x}<br>Count: %{customdata[0]}<br>Cumulative: %{customdata[1]}<br>Source: %{customdata[2]}<extra></extra>'
+                ))
+            fig_line.update_layout(
+                title = dict(text = f'Term Growth — {source_label}', x = 0.02, xanchor = 'left'),
+                template = 'plotly_white',
+                paper_bgcolor = '#f8fafc',
+                plot_bgcolor = '#f8fafc',
+                hovermode = 'x unified',
+                legend = dict(orientation = 'v', yanchor = 'top', y = 1, xanchor = 'left', x = 1.02, bgcolor = 'rgba(255,255,255,0.7)'),
+                margin = dict(l = 70, r = 30, t = 70, b = 60),
+                font = dict(family = 'Arial, sans-serif', size = 13, color = '#243447'),
+                title_font = dict(size = 20),
+            )
+            fig_line.update_xaxes(title = 'Year', tickmode = 'linear', dtick = 1, tickangle = 90, showgrid = True, gridcolor = 'rgba(15,23,42,0.08)', zeroline = False)
+            fig_line.update_yaxes(title = metric_label, showgrid = True, gridcolor = 'rgba(15,23,42,0.08)', zeroline = False)
+            fig_line.show()
+
+        if bubble:
+            bubble_df = df[df[metric_col] > 0].copy()
+            if not bubble_df.empty:
+                max_metric = max(float(bubble_df[metric_col].max()), 1.0)
+                size_ref = (2.0 * max_metric) / (34.0 ** 2)
+                fig_bubble = go.Figure()
+                for term in top_terms:
+                    term_df = bubble_df[bubble_df['term'] == term]
+                    if term_df.empty:
+                        continue
+                    fig_bubble.add_trace(go.Scatter(
+                        x = term_df['year'],
+                        y = term_df['term'],
+                        mode = 'markers',
+                        name = term,
+                        marker = dict(
+                            size = term_df[metric_col],
+                            sizemode = 'area',
+                            sizeref = size_ref,
+                            sizemin = 7,
+                            color = color_map[term],
+                            opacity = 0.78,
+                            line = dict(width = 1, color = '#ffffff')
+                        ),
+                        customdata = np.column_stack([
+                            term_df['count'].to_numpy(),
+                            term_df['cumulative_count'].to_numpy(),
+                            term_df['source'].astype(str).to_numpy()
+                        ]),
+                        hovertemplate = '<b>%{y}</b><br>Year: %{x}<br>Count: %{customdata[0]}<br>Cumulative: %{customdata[1]}<br>Source: %{customdata[2]}<extra></extra>'
+                    ))
+                fig_bubble.update_layout(
+                    title = dict(text = f'Term Growth Bubble Timeline — {source_label}', x = 0.02, xanchor = 'left'),
+                    template = 'plotly_white',
+                    paper_bgcolor = '#f8fafc',
+                    plot_bgcolor = '#f8fafc',
+                    legend = dict(orientation = 'v', yanchor = 'top', y = 1, xanchor = 'left', x = 1.02, bgcolor = 'rgba(255,255,255,0.7)'),
+                    margin = dict(l = 90, r = 30, t = 70, b = 60),
+                    font = dict(family = 'Arial, sans-serif', size = 13, color = '#243447'),
+                    title_font = dict(size = 20),
+                )
+                fig_bubble.update_xaxes(title = 'Year', tickmode = 'linear', dtick = 1, tickangle = 90, showgrid = True, gridcolor = 'rgba(15,23,42,0.08)', zeroline = False)
+                fig_bubble.update_yaxes(title = 'Term', categoryorder = 'array', categoryarray = list(reversed(top_terms)), showgrid = True, gridcolor = 'rgba(15,23,42,0.05)', zeroline = False)
+                fig_bubble.show()
+
+        return df
+
     # Function: Wordcloud 
     def word_cloud_plot(self, entry = 'kwp', size_x = 10, size_y = 10, wordsn = 500, rmv_custom_words = []):   
         plt       = _get_matplotlib()
@@ -7670,14 +7900,21 @@ class pbx_probe():
 
 ############################################################################
 
+    # Function: Temporal Scholarly Graph
+    def temporal_sg(self, view = "timeline", layers = None, time_mode = "range", start_year = None, end_year = None, center = "paper", selected = None, max_papers = 500, max_references = 300, color_by = "type", size_by = "citations", notebook = True, open_browser = True, save_html = None, preview = True):
+        from .tsg import temporal_sg as _tsg
+        return _tsg(self, view = view, layers = layers, time_mode = time_mode, start_year = start_year, end_year = end_year, center = center, selected = selected, max_papers = max_papers, max_references = max_references, color_by = color_by, size_by = size_by, notebook = notebook, open_browser = open_browser, save_html = save_html, preview = preview)
+
+############################################################################
+
     # Function: Sentence Embeddings # 'abs', 'title', 'kwa', 'kwp'
     # Helper: chunked sentence-encoding shared by create_embeddings and
     # docs_projection's embeddings=True branch. Pulls the chunk size,
     # encoder batch size and verbosity flag from self.batch_config.
     def _encode_embeddings_chunked(self, model_obj, corpus):
         cfg = getattr(self, 'batch_config', None)
-        text_chunk_size = int(getattr(cfg, 'embedding_text_chunk_size', 2000)) if cfg is not None else 2000
-        batch_size      = int(getattr(cfg, 'embedding_batch_size',      128))  if cfg is not None else 128
+        text_chunk_size = int(getattr(cfg, 'embedding_text_chunk_size', 2000))  if cfg is not None else 2000
+        batch_size      = int(getattr(cfg, 'embedding_batch_size',      128))   if cfg is not None else 128
         verbose         = bool(getattr(cfg, 'verbose',                  False)) if cfg is not None else False
         if verbose:
             n_chunks = -(-len(corpus) // text_chunk_size) if text_chunk_size > 0 else 1

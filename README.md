@@ -45,7 +45,7 @@ c) **PubMed**: Search, select articles, click **Save**, choose **PubMed** format
 d) **OpenAlex**: **API Option** -> Retrieve records through the **OpenAlex REST API** and save the response as a `.json` file. OpenAlex’s official programmatic interface is its API, designed for structured, machine-readable access ([OpenAlex Developers](https://developers.openalex.org/api-reference/introduction)). **Website Option** -> Search and filter records in the OpenAlex website, click **Export**, and choose **CSV (standard)**. In particular, from the **Website option**, the exported files do **not** contain the **References** for the articles.
 
 
-General Capabilities:
+### General Capabilities:
 
 - a) Works with **Scopus** (`.bib` files or `.csv` files), **WoS** (`.bib` files), **PubMed** (`.txt` files), and **OpenAlex** (**API JSON** files and **website CSV (standard)** files).
 - b) Identification and Removal of duplicates
@@ -73,7 +73,8 @@ General Capabilities:
 - x) Creates a **Citation Matrix** that shows for each Reference, which citing articles (with their publication years) mentioned that Reference, the Unique Reference ID, and the Reference's publication year
 - y) Creates a **RPYS-Reference Publication Year Spectroscopy (interactive plot)** to visualize citation patterns over the years. Revealing the peaks in reference publication years (trough Gaussian Filters) that might indicate influential works or shifts in research trends
 
-Network Capabilities:
+### Network Capabilities:
+
 - a) Creates a **Top Reference Set Matrix**, which, for a given group size n, identifies and returns the most frequently co-cited Reference groups of size n
 - b) Creates a **Reference Co-Citation Network (interactive plot)** that visually displays the top n References that are most frequently cited together with a target Reference
 - c) **Collaboration Plot** between Authors, Countries, Institutions, Authors' Keywords or Keywords Plus
@@ -85,13 +86,20 @@ Network Capabilities:
 - i) **Similarity Analysis (interactive plot)** can be performed using coupling or cocitation methods
 - j) **World Map Collaboration Analysis (interactive plot)** between Countries in a Map
 - k) **Main Path Analysis** identifies the main citation backbone of the field using search path methods such as SPC, SPLC, or SPNP
-- l) Creates a **Temporal Scholarly Graph Explorer (interactive HTML plot)** to explore the bibliometric dataset as a heterogeneous temporal graph. It supports **timeline**, **force**, and **ego** views; allows centering the analysis on papers, references, authors, journals, institutions, countries, authors' keywords, or keywords plus; and can export a standalone **HTML** file for interactive exploration.
+- l) Creates a **Temporal Scholarly Graph Explorer (interactive HTML plot)** to explore the bibliometric dataset as a heterogeneous temporal graph. It supports **timeline**, **force**, and **ego** views; allows centering the analysis on Papers, References, Authors, Journals, Institutions, Countries, Authors' Keywords, or Keywords Plus; and can export a standalone **HTML** file for interactive exploration.
 
-Scientometric Capabilities:
-- a) Computes **Reference Diversity** indicators for papers, such as breadth and temporal diversity of cited references
-- b) Computes the **Disruption Index** to identify whether papers are more disruptive or more developmental within the citation network
+### Scientometric Capabilities:
 
-Artificial Intelligence Capabilities:
+- a) Performs **Portfolio Analysis** to classify entities, such as Authors, Journals, Institutions, Countries, Authors' Keywords or Keywords Plus, according to productivity and impact indicators.
+- b) Performs **Specialization Analysis** to measure how concentrated or diversified the scientific production is across entities, themes, or conceptual fields.
+- c) Computes **Collaboration Impact** indicators to evaluate how collaborative patterns relate to scientific visibility, citation performance, and productivity.
+- d) Performs **Burst Detection** to identify Papers, Authors, Journals, Authors' Keywords, Keywords Plus or other entities with sudden increases in scientific attention over time.
+- e) Performs **Knowledge Diffusion Analysis** to trace how concepts move between entities, using heatmaps, chord diagrams, Sankey diagrams, or automatic visualization selection.
+- f) Computes **Reference Diversity** indicators for Papers, such as breadth, depth, temporal diversity, and concentration of cited References.
+- g) Computes the **Disruption Index** to identify whether papers are more disruptive or more developmental within the citation network.
+
+### Artificial Intelligence Capabilities:
+
 - a) **Topic Modelling** using BERTopic to cluster documents by topic
 - b) Visualize topics distribution
 - c) Visualize topics by the most representative words
@@ -114,7 +122,8 @@ Artificial Intelligence Capabilities:
 - u) **Ask chatGPT** to analyze the following results: EDA Report, WordCloud, N-Grams, Evolution Plot, Sankey Diagram, Authors Productivity Plot, Countries Productivity Plot, Institutions Productivity Plot, Sources Productivity Plot, Bar Plots, Citation Analysis, Collaboration Analysis, Similarity Analysis, and World Map Collaboration Analysis (consult **Example 08**). Requires the user to have an **API key** (https://platform.openai.com/account/api-keys)
 - v) **Ask Gemini** to analyze the following results: EDA Report, WordCloud, N-Grams, Evolution Plot, Sankey Diagram, Authors Productivity Plot, Countries Productivity Plot, Institutions Productivity Plot, Sources Productivity Plot, Bar Plots, Citation Analysis, Collaboration Analysis, Similarity Analysis, and World Map Collaboration Analysis (consult **Example 09**). Requires the user to have an **API key** (https://ai.google.dev/gemini-api/)
 
-Correction and Manipulation Capabilities:
+### Correction and Manipulation Capabilities:
+
 - a) Filter the .bib, .csv or .txt file by Year, Sources, Bradford Law Cores, Countries, Languages and/or Abstracts (Documents with Abstracts)
 - b) Merge Authors, Institutions, Countries, Languages, Sources and/or References that have multiple entries 
 - c) Merge different or the same database files one at a time. The preference for information preservation is given to the old database, so the order of merging matters (consult **Examples 04 and 05**)
@@ -141,7 +150,7 @@ pip install pybibx
 - Example 10: **Ask chatGPT** Analysis ([ Colab Demo ](https://colab.research.google.com/drive/1LMrR49F54MuX-stlrQbrrjX_dEU3kZ8Y?usp=sharing))
 - Example 11: **Ask Gemini** Analysis  ([ Colab Demo ](https://colab.research.google.com/drive/1oEJBfCml_OMgmSTicMOB-FKMaR2FtoG3?usp=sharing))
 
-# Acknowledgement 
+## Acknowledgement 
 This section indicates the libraries that inspired pybibx
 
 - **BERT (https://smrzr.io/)**:

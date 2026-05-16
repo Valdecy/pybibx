@@ -1503,10 +1503,11 @@ body{background:var(--bg);color:var(--tx);font-family:var(--body);font-size:14px
 .out-download-btn:hover{border-color:var(--am);color:var(--am2);background:var(--am-d);}
 .out-panel{display:none;padding:0;}
 .out-panel.active{display:block;}
-.plotly-out{width:100%;height:520px;}
+.plotly-out{width:100%;height:clamp(640px,72vh,920px);min-height:640px;}
+.js-plotly-plot,.plot-container,.svg-container{max-width:100%;}
 .html-out-frame{display:block;width:100%;height:calc(100vh - 190px);min-height:640px;border:0;background:#060b16;}
 .html-stats{padding:10px 12px;background:var(--bg);color:var(--tx2);font-family:var(--mono);font-size:11px;border-bottom:1px solid var(--bdr);}
-.img-out{display:block;width:100%;border-radius:0;}
+.img-out{display:block;width:100%;height:auto;max-width:100%;object-fit:contain;border-radius:0;}
 #spinner-overlay{position:fixed;inset:0;background:rgba(2,6,23,.62);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:9999;padding:24px;}
 #spinner-overlay.show{display:flex;}
 .spinner-card{min-width:260px;max-width:420px;background:linear-gradient(180deg,var(--sur),var(--bg2));border:1px solid var(--bdr2);border-radius:20px;box-shadow:0 28px 80px rgba(0,0,0,.45);padding:26px 24px;display:flex;align-items:center;gap:16px;}
@@ -1751,6 +1752,9 @@ select option{background:var(--sur);}
     <div class="nav-item disabled" data-view="profiling" onclick="showView('profiling',this)">
       <span class="nav-ico">🔍</span> Profiling
     </div>
+    <div class="nav-item disabled" data-view="advanced" onclick="showView('advanced',this)">
+      <span class="nav-ico">🧪</span> Scientometric Analytics
+    </div>
     <div class="nav-item disabled" data-view="ai" data-ai-area="topics" onclick="showView('ai',this,'topics')">
       <span class="nav-ico">🧠</span> AI - Topics
     </div>
@@ -1945,8 +1949,6 @@ select option{background:var(--sur);}
           <div class="fn-card" onclick="selectParams('cocitnet','references',this)"><div class="fn-card-icon">🕸</div><div class="fn-card-name">Co-Citation Network</div><div class="fn-card-desc">Network around a focal reference</div></div>
           <div class="fn-card" onclick="selectParams('sleep','references',this)"><div class="fn-card-icon">😴</div><div class="fn-card-name">Sleeping Beauties</div><div class="fn-card-desc">Late-blooming references with delayed recognition</div></div>
           <div class="fn-card" onclick="selectParams('princes','references',this)"><div class="fn-card-icon">👑</div><div class="fn-card-name">Princes</div><div class="fn-card-desc">Likely awakening papers associated with sleeping beauties</div></div>
-          <div class="fn-card" onclick="selectParams('refdiv','references',this)"><div class="fn-card-icon">📚</div><div class="fn-card-name">Reference Diversity</div><div class="fn-card-desc">Breadth and age profile of each paper's references</div></div>
-          <div class="fn-card" onclick="selectParams('disruption','references',this)"><div class="fn-card-icon">⚡</div><div class="fn-card-name">Disruption Index</div><div class="fn-card-desc">Whether papers disrupt or consolidate prior work</div></div>
         </div>
         <div class="fn-hint">Click any function card to configure its parameters →</div>
       </div>
@@ -1963,6 +1965,43 @@ select option{background:var(--sur);}
           <div class="fn-card" onclick="selectParams('metrics','profiling',this)">
             <div class="fn-card-icon">📐</div><div class="fn-card-name">Compute Indices</div>
             <div class="fn-card-desc">H · G · E · J · M for every author in the corpus</div>
+          </div>
+        </div>
+        <div class="fn-hint">Click a card to configure parameters →</div>
+      </div>
+
+      <!-- ── SCIENTOMETRIC ANALYTICS ── -->
+      <div class="view" id="view-advanced">
+        <div class="view-title">Scientometric Analytics</div>
+        <div class="view-desc">Higher-level scientometric indicators: portfolio, specialization, collaboration, burst, diffusion, reference diversity, and disruption analyses using the current loaded dataset.</div>
+        <div class="fn-grid">
+          <div class="fn-card" onclick="selectParams('adv-portfolio','advanced',this)">
+            <div class="fn-card-icon">🧭</div><div class="fn-card-name">Portfolio Analysis</div>
+            <div class="fn-card-desc">Classify entities by productivity and impact quadrants</div>
+          </div>
+          <div class="fn-card" onclick="selectParams('adv-specialization','advanced',this)">
+            <div class="fn-card-icon">🎯</div><div class="fn-card-name">Specialization Analysis</div>
+            <div class="fn-card-desc">Activity index, symmetric index, and share matrices</div>
+          </div>
+          <div class="fn-card" onclick="selectParams('adv-collaboration','advanced',this)">
+            <div class="fn-card-icon">🤝</div><div class="fn-card-name">Collaboration Impact</div>
+            <div class="fn-card-desc">Solo/collaborative output, citations, and network centrality</div>
+          </div>
+          <div class="fn-card" onclick="selectParams('adv-burst','advanced',this)">
+            <div class="fn-card-icon">⚡</div><div class="fn-card-name">Burst Detection</div>
+            <div class="fn-card-desc">Detect temporally intense keywords, terms, or sources</div>
+          </div>
+          <div class="fn-card" onclick="selectParams('adv-diffusion','advanced',this)">
+            <div class="fn-card-icon">🌊</div><div class="fn-card-name">Knowledge Diffusion</div>
+            <div class="fn-card-desc">Trace concept movement across entities and time</div>
+          </div>
+          <div class="fn-card" onclick="selectParams('refdiv','advanced',this)">
+            <div class="fn-card-icon">📚</div><div class="fn-card-name">Reference Diversity</div>
+            <div class="fn-card-desc">Breadth and age profile of each paper's references</div>
+          </div>
+          <div class="fn-card" onclick="selectParams('disruption','advanced',this)">
+            <div class="fn-card-icon">⚡</div><div class="fn-card-name">Disruption Index</div>
+            <div class="fn-card-desc">Whether papers disrupt or consolidate prior work</div>
           </div>
         </div>
         <div class="fn-hint">Click a card to configure parameters →</div>
@@ -2508,7 +2547,7 @@ select option{background:var(--sur);}
         </div>
       </div>
 
-      <!-- REFS: REFERENCE DIVERSITY -->
+      <!-- SCIENTOMETRIC: REFERENCE DIVERSITY -->
       <div class="params-section" id="params-refdiv">
         <div class="params-box">
           <div class="params-title">Reference Diversity Parameters</div>
@@ -2520,7 +2559,7 @@ select option{background:var(--sur);}
         </div>
       </div>
 
-      <!-- REFS: DISRUPTION INDEX -->
+      <!-- SCIENTOMETRIC: DISRUPTION INDEX -->
       <div class="params-section" id="params-disruption">
         <div class="params-box">
           <div class="params-title">Disruption Index Parameters</div>
@@ -2530,6 +2569,91 @@ select option{background:var(--sur);}
           </div>
           <div class="checkbox-row"><input type="checkbox" id="di-strict" checked/><span>Only count strictly future citers</span></div>
           <button class="run-btn" onclick="runRefsExtra('disruption_index',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
+      <!-- ADVANCED: PORTFOLIO ANALYSIS -->
+      <div class="params-section" id="params-adv-portfolio">
+        <div class="params-box">
+          <div class="params-title">Portfolio Analysis Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Entity</label><select id="advp-entity"><option value="jou">Journals</option><option value="aut">Authors</option><option value="cout">Countries</option><option value="inst">Institutions</option><option value="kwa">Authors Keywords</option><option value="kwp">Keywords Plus</option><option value="ref">References</option></select></div>
+            <div class="param-item"><label class="fl">Productivity</label><select id="advp-productivity"><option value="documents">Documents</option></select></div>
+            <div class="param-item"><label class="fl">Impact</label><select id="advp-impact"><option value="citations">Total citations</option><option value="mean_citations">Mean citations</option><option value="h_index">H-index</option></select></div>
+            <div class="param-item"><label class="fl">Thresholds</label><select id="advp-thresholds"><option value="median">Median</option><option value="mean">Mean</option></select></div>
+            <div class="param-item"><label class="fl">Top N</label><input type="number" id="advp-topn" placeholder="blank = all" min="1"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="advp-drop" checked/><span>Drop unknown / empty entities</span></div>
+          <button class="run-btn" onclick="runAdvanced('portfolio',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
+      <!-- ADVANCED: SPECIALIZATION ANALYSIS -->
+      <div class="params-section" id="params-adv-specialization">
+        <div class="params-box">
+          <div class="params-title">Specialization Analysis Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Entity</label><select id="advs-entity"><option value="cout">Countries</option><option value="inst">Institutions</option><option value="aut">Authors</option><option value="jou">Journals</option></select></div>
+            <div class="param-item"><label class="fl">Field</label><select id="advs-field"><option value="kwa">Authors Keywords</option><option value="kwp">Keywords Plus</option><option value="jou">Journals</option><option value="cout">Countries</option><option value="inst">Institutions</option><option value="aut">Authors</option></select></div>
+            <div class="param-item"><label class="fl">Metric</label><select id="advs-metric"><option value="activity_index">Activity Index / RCA</option><option value="symmetric_index">Symmetric Index</option><option value="share">Share</option></select></div>
+            <div class="param-item"><label class="fl">Top N entities</label><input type="number" id="advs-topent" value="15" min="1"/></div>
+            <div class="param-item"><label class="fl">Top N fields</label><input type="number" id="advs-topfield" value="15" min="1"/></div>
+            <div class="param-item"><label class="fl">Minimum count</label><input type="number" id="advs-min" value="2" min="1"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="advs-drop" checked/><span>Drop unknown / empty entities</span></div>
+          <button class="run-btn" onclick="runAdvanced('specialization',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
+      <!-- ADVANCED: COLLABORATION IMPACT -->
+      <div class="params-section" id="params-adv-collaboration">
+        <div class="params-box">
+          <div class="params-title">Collaboration Impact Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Entity</label><select id="advc-entity"><option value="cout">Countries</option><option value="inst">Institutions</option><option value="aut">Authors</option></select></div>
+            <div class="param-item"><label class="fl">Top N</label><input type="number" id="advc-topn" value="25" min="1"/></div>
+            <div class="param-item"><label class="fl">Minimum documents</label><input type="number" id="advc-min" value="1" min="1"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="advc-drop" checked/><span>Drop unknown / empty entities</span></div>
+          <button class="run-btn" onclick="runAdvanced('collaboration',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
+      <!-- ADVANCED: BURST DETECTION -->
+      <div class="params-section" id="params-adv-burst">
+        <div class="params-box">
+          <div class="params-title">Burst Detection Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Source</label><select id="advb-source"><option value="kwa">Authors Keywords</option><option value="kwp">Keywords Plus</option><option value="aut">Authors</option><option value="cout">Countries</option><option value="inst">Institutions</option><option value="jou">Journals</option><option value="ref">References</option><option value="lan">Languages</option></select></div>
+            <div class="param-item"><label class="fl">Method</label><select id="advb-method"><option value="kleinberg">Kleinberg</option></select></div>
+            <div class="param-item"><label class="fl">Minimum frequency</label><input type="number" id="advb-minfreq" value="5" min="1"/></div>
+            <div class="param-item"><label class="fl">s</label><input type="number" id="advb-s" value="2.0" step="0.1" min="1"/></div>
+            <div class="param-item"><label class="fl">gamma</label><input type="number" id="advb-gamma" value="1.0" step="0.1" min="0"/></div>
+            <div class="param-item"><label class="fl">Top N</label><input type="number" id="advb-topn" value="30" min="1"/></div>
+            <div class="param-item"><label class="fl">Start year</label><input type="number" id="advb-start" placeholder="optional"/></div>
+            <div class="param-item"><label class="fl">End year</label><input type="number" id="advb-end" placeholder="optional"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="advb-drop" checked/><span>Drop unknown / empty terms</span></div>
+          <button class="run-btn" onclick="runAdvanced('burst',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
+      <!-- ADVANCED: KNOWLEDGE DIFFUSION -->
+      <div class="params-section" id="params-adv-diffusion">
+        <div class="params-box">
+          <div class="params-title">Knowledge Diffusion Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Source entity</label><select id="advd-source"><option value="cout">Countries</option><option value="inst">Institutions</option><option value="aut">Authors</option><option value="jou">Journals</option></select></div>
+            <div class="param-item"><label class="fl">Target entity</label><select id="advd-target"><option value="cout">Countries</option><option value="inst">Institutions</option><option value="aut">Authors</option><option value="jou">Journals</option></select></div>
+            <div class="param-item"><label class="fl">Concept field</label><select id="advd-concept"><option value="kwa">Authors Keywords</option><option value="kwp">Keywords Plus</option><option value="ref">References</option></select></div>
+            <div class="param-item"><label class="fl">Mechanism</label><select id="advd-mechanism"><option value="temporal">Temporal</option><option value="citation">Citation</option></select></div>
+            <div class="param-item"><label class="fl">Top N concepts</label><input type="number" id="advd-topconcepts" value="12" min="1"/></div>
+            <div class="param-item"><label class="fl">Top N entities</label><input type="number" id="advd-topentities" value="15" min="1"/></div>
+            <div class="param-item"><label class="fl">Min concept count</label><input type="number" id="advd-minconcept" value="5" min="1"/></div>
+            <div class="param-item"><label class="fl">Visualization</label><select id="advd-viz"><option value="auto">Auto</option><option value="heatmap">Heatmap</option><option value="chord">Chord</option><option value="sankey">Sankey</option></select></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="advd-drop" checked/><span>Drop unknown / empty entities</span></div>
+          <button class="run-btn" onclick="runAdvanced('diffusion',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
         </div>
       </div>
 
@@ -3520,7 +3644,7 @@ function showView(id, el, aiArea=null){
   const titles = {
     upload:'Upload Data', dataset:'Dataset & Reports', visuals:'Visualizations',
     network:'Network Analysis', temporal:'Temporal Scholarly Graph', references:'Reference Analysis',
-    profiling:'Entity Profiling', ai:'AI & Tools'
+    profiling:'Entity Profiling', advanced:'Scientometric Analytics', ai:'AI & Tools'
   };
   const subs = {
     upload:'Select your database export file to begin',
@@ -3530,6 +3654,7 @@ function showView(id, el, aiArea=null){
     temporal:'Dedicated paper-centred temporal explorer with its own workspace tab',
     references:'Citation patterns, RPYS, and trajectories',
     profiling:'Profile entities or compute H, G, E, J, and M indices',
+    advanced:'Portfolio, specialization, collaboration, burst, diffusion, reference diversity, and disruption analytics',
     ai:'Topic modelling, word-level analysis, and concise topic summaries'
   };
   if(id === 'ai') setAIArea(aiArea || (el && el.dataset && el.dataset.aiArea) || _currentAIArea || 'topics');
@@ -3868,7 +3993,8 @@ function runRefsExtra(kind, btn){
     reference_diversity: {kind:'reference_diversity',paper_ids:document.getElementById('rd-paperids').value},
     disruption_index: {kind:'disruption_index',paper_ids:document.getElementById('di-paperids').value,strict_future:document.getElementById('di-strict').checked,min_future_citers:document.getElementById('di-minfuture').value}
   };
-  runAndDisplay('/api/refs', bodies[kind]||{kind}, btn, 'References');
+  const label = (kind === 'reference_diversity' || kind === 'disruption_index') ? 'Scientometric Analytics' : 'References';
+  runAndDisplay('/api/refs', bodies[kind]||{kind}, btn, label);
 }
 
 // ── Profiling ──
@@ -3881,6 +4007,72 @@ function runProfiling(btn){
 
 // ── Metrics ──
 function runMetrics(btn){ runAndDisplay('/api/hindex',{year:document.getElementById('mi-year').value},btn,'Metrics'); }
+
+// ── Scientometric Analytics ──
+function runAdvanced(kind, btn){
+  const bodies = {
+    portfolio: {
+      entity: document.getElementById('advp-entity').value,
+      productivity: document.getElementById('advp-productivity').value,
+      impact: document.getElementById('advp-impact').value,
+      thresholds: document.getElementById('advp-thresholds').value,
+      topn: document.getElementById('advp-topn').value,
+      drop_unknown: document.getElementById('advp-drop').checked
+    },
+    specialization: {
+      entity: document.getElementById('advs-entity').value,
+      field: document.getElementById('advs-field').value,
+      metric: document.getElementById('advs-metric').value,
+      topn_entity: document.getElementById('advs-topent').value,
+      topn_field: document.getElementById('advs-topfield').value,
+      min_count: document.getElementById('advs-min').value,
+      drop_unknown: document.getElementById('advs-drop').checked
+    },
+    collaboration: {
+      entity: document.getElementById('advc-entity').value,
+      topn: document.getElementById('advc-topn').value,
+      min_documents: document.getElementById('advc-min').value,
+      drop_unknown: document.getElementById('advc-drop').checked
+    },
+    burst: {
+      source: document.getElementById('advb-source').value,
+      method: document.getElementById('advb-method').value,
+      min_frequency: document.getElementById('advb-minfreq').value,
+      s: document.getElementById('advb-s').value,
+      gamma: document.getElementById('advb-gamma').value,
+      topn: document.getElementById('advb-topn').value,
+      start: document.getElementById('advb-start').value,
+      end: document.getElementById('advb-end').value,
+      drop_unknown: document.getElementById('advb-drop').checked
+    },
+    diffusion: {
+      source_entity: document.getElementById('advd-source').value,
+      target_entity: document.getElementById('advd-target').value,
+      concept_field: document.getElementById('advd-concept').value,
+      mechanism: document.getElementById('advd-mechanism').value,
+      topn_concepts: document.getElementById('advd-topconcepts').value,
+      topn_entities: document.getElementById('advd-topentities').value,
+      min_concept_count: document.getElementById('advd-minconcept').value,
+      drop_unknown: document.getElementById('advd-drop').checked,
+      viz: document.getElementById('advd-viz').value
+    }
+  };
+  const endpoints = {
+    portfolio: '/api/portfolio_analysis',
+    specialization: '/api/specialization_analysis',
+    collaboration: '/api/collaboration_impact',
+    burst: '/api/burst_detection',
+    diffusion: '/api/knowledge_diffusion'
+  };
+  const labels = {
+    portfolio: 'Portfolio Analysis',
+    specialization: 'Specialization Analysis',
+    collaboration: 'Collaboration Impact',
+    burst: 'Burst Detection',
+    diffusion: 'Knowledge Diffusion'
+  };
+  runAndDisplay(endpoints[kind], bodies[kind] || {}, btn, labels[kind] || 'Scientometric Analytics');
+}
 
 // ── AI / Topics ──
 let _currentAiKindGlobal = 'graph_topics';
@@ -4255,9 +4447,27 @@ function renderResult(d, label){
           if(spec.layout.xaxis && !spec.layout.xaxis.gridcolor) spec.layout.xaxis.gridcolor = 'rgba(0,0,0,.12)';
           if(spec.layout.yaxis && !spec.layout.yaxis.gridcolor) spec.layout.yaxis.gridcolor = 'rgba(0,0,0,.12)';
         }
-        spec.layout.margin = spec.layout.margin || {t:40,b:60,l:60,r:20};
+        const m = spec.layout.margin || {};
+        spec.layout.margin = {
+          t: Math.max(70, Number(m.t || 0)),
+          b: Math.max(90, Number(m.b || 0)),
+          l: Math.max(80, Number(m.l || 0)),
+          r: Math.max(50, Number(m.r || 0))
+        };
+        Object.keys(spec.layout).forEach((key)=>{
+          if(/^xaxis\d*$/.test(key) || /^yaxis\d*$/.test(key)){
+            spec.layout[key] = Object.assign({automargin:true}, spec.layout[key] || {});
+          }
+        });
         requestAnimationFrame(()=>{
-          Plotly.newPlot(div, spec.data || [], spec.layout || {}, {responsive:true, displayModeBar:true, displaylogo:false});
+          const availableH = Math.max(640, Math.min(920, Math.round((window.innerHeight || 900) * 0.72)));
+          const requestedH = Number(spec.layout.height || 0);
+          const finalH = Math.max(640, Math.min(1100, Math.max(requestedH, availableH)));
+          div.style.height = finalH + 'px';
+          spec.layout.height = finalH;
+          spec.layout.autosize = true;
+          Plotly.newPlot(div, spec.data || [], spec.layout || {}, {responsive:true, displayModeBar:true, displaylogo:false, scrollZoom:true});
+          Plotly.Plots.resize(div);
           div.dataset.rendered = '1';
         });
       });
@@ -4475,7 +4685,7 @@ function sortSelectByText(id){
 function sortDropdowns(){
   [
     'dbsel','wc-entry','ng-entry','ng-lang','tm-entry','ev-key','ev-lang','pr-kind','pj-corpus','pj-lang','pj-method','pj-cm',
-    'adj-type','adj-centrality','adj-labeltype','sim-type','tsg-view','prof-kind','ai-lang','aiwe-lang','cxy-x','cxy-y','hxy-x','hxy-y','aiemb-corpus','aiemb-lang'
+    'adj-type','adj-centrality','adj-labeltype','sim-type','tsg-view','prof-kind','advp-entity','advp-impact','advs-entity','advs-field','advc-entity','advb-source','advd-source','advd-target','advd-concept','ai-lang','aiwe-lang','cxy-x','cxy-y','hxy-x','hxy-y','aiemb-corpus','aiemb-lang'
   ].forEach(sortSelectByText);
 }
 
@@ -4544,6 +4754,121 @@ def temporal_sg_route():
     except Exception as e:
         import traceback
         return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Advanced scientometric analytics
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/portfolio_analysis', methods=['POST'])
+def portfolio_analysis_route():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d   = request.json or {}
+    pbx = STATE['pbx']
+    return jsonify(run_fn(
+        pbx.portfolio_analysis,
+        entity       = d.get('entity', 'jou'),
+        productivity = d.get('productivity', 'documents'),
+        impact       = d.get('impact', 'citations'),
+        thresholds   = d.get('thresholds', 'median'),
+        topn         = int(d['topn']) if d.get('topn') not in (None, '', 'null') else None,
+        drop_unknown = bool(d.get('drop_unknown', True)),
+        view         = 'notebook',
+        verbose      = False,
+    ))
+
+@app.route('/api/specialization_analysis', methods=['POST'])
+def specialization_analysis_route():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d   = request.json or {}
+    pbx = STATE['pbx']
+    return jsonify(run_fn(
+        pbx.specialization_analysis,
+        entity       = d.get('entity', 'cout'),
+        field        = d.get('field', 'kwa'),
+        metric       = d.get('metric', 'activity_index'),
+        topn_entity  = int(d.get('topn_entity', 15)) if d.get('topn_entity') not in (None, '', 'null') else 15,
+        topn_field   = int(d.get('topn_field',  15)) if d.get('topn_field')  not in (None, '', 'null') else 15,
+        min_count    = int(d.get('min_count',    2)),
+        drop_unknown = bool(d.get('drop_unknown', True)),
+        view         = 'notebook',
+        verbose      = False,
+    ))
+
+@app.route('/api/collaboration_impact', methods=['POST'])
+def collaboration_impact_route():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d   = request.json or {}
+    pbx = STATE['pbx']
+    return jsonify(run_fn(
+        pbx.collaboration_impact,
+        entity        = d.get('entity', 'cout'),
+        topn          = int(d['topn']) if d.get('topn') not in (None, '', 'null') else 25,
+        min_documents = int(d.get('min_documents', 1)),
+        drop_unknown  = bool(d.get('drop_unknown', True)),
+        view          = 'notebook',
+        verbose       = False,
+    ))
+
+@app.route('/api/burst_detection', methods=['POST'])
+def burst_detection_route():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d   = request.json or {}
+    pbx = STATE['pbx']
+    source = str(d.get('source', 'kwa') or 'kwa').strip().lower()
+    if source in ('title', 'ti', 'abs', 'abstract'):
+        source = 'kwa'
+    valid_sources = {'kwa', 'kwp', 'aut', 'cout', 'inst', 'jou', 'ref', 'lan'}
+    if source not in valid_sources:
+        source = 'kwa'
+    return jsonify(run_fn(
+        pbx.burst_detection,
+        source        = source,
+        method        = d.get('method', 'kleinberg'),
+        min_frequency = int(d.get('min_frequency', 5)),
+        s             = float(d.get('s', 2.0)),
+        gamma         = float(d.get('gamma', 1.0)),
+        topn          = int(d['topn']) if d.get('topn') not in (None, '', 'null') else 30,
+        drop_unknown  = bool(d.get('drop_unknown', True)),
+        start         = int(d['start']) if d.get('start') else None,
+        end           = int(d['end'])   if d.get('end')   else None,
+        view          = 'notebook',
+        verbose       = False,
+    ))
+
+@app.route('/api/knowledge_diffusion', methods=['POST'])
+def knowledge_diffusion_route():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d   = request.json or {}
+    pbx = STATE['pbx']
+    concept_field = str(d.get('concept_field', 'kwa') or 'kwa').strip().lower()
+    if concept_field in ('title', 'ti', 'abs', 'abstract'):
+        concept_field = 'kwa'
+    if concept_field not in {'kwa', 'kwp', 'ref'}:
+        concept_field = 'kwa'
+    viz = str(d.get('viz', 'auto') or 'auto').strip().lower()
+    if viz in ('network', 'graph', 'none', 'null', ''):
+        viz = 'auto'
+    if viz not in {'auto', 'heatmap', 'chord', 'sankey'}:
+        viz = 'auto'
+    return jsonify(run_fn(
+        pbx.knowledge_diffusion,
+        source_entity     = d.get('source_entity', 'cout'),
+        target_entity     = d.get('target_entity', 'cout'),
+        concept_field     = concept_field,
+        mechanism         = d.get('mechanism', 'temporal'),
+        topn_concepts     = int(d.get('topn_concepts', 12)) if d.get('topn_concepts') not in (None, '', 'null') else 12,
+        topn_entities     = int(d.get('topn_entities', 15)) if d.get('topn_entities') not in (None, '', 'null') else 15,
+        min_concept_count = int(d.get('min_concept_count', 5)),
+        drop_unknown      = bool(d.get('drop_unknown', True)),
+        viz               = viz,
+        view              = 'notebook',
+        verbose           = False,
+    ))
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT

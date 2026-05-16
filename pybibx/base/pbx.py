@@ -7772,131 +7772,13 @@ class pbx_probe():
 
     # Function: Reference Diversity
     def reference_diversity(self, paper_ids = None):
-        selected = self._safe_doc_indices(paper_ids) if (paper_ids is not None) else list(range(self.data.shape[0]))
-        years = pd.to_numeric(self.data['year'], errors = 'coerce').fillna(np.nan).tolist()
-        internal_refs = self._internal_reference_doc_ids()
-        source_col = 'abbrev_source_title' if ('abbrev_source_title' in self.data.columns) else 'journal'
-        rows = []
-
-        for idx in selected:
-            paper_year = years[idx]
-            refs = [ref for ref in self.ref[idx] if str(ref).strip().upper() != 'UNKNOWN']
-            internal_ids = [ref_idx for ref_idx in internal_refs[idx] if 0 <= ref_idx < self.data.shape[0]]
-            ref_ages = []
-            internal_sources = []
-            self_cites = 0
-            focal_authors = set([str(a).strip().lower() for a in self.aut[idx] if str(a).strip().upper() != 'UNKNOWN'])
-
-            for ref_idx in internal_ids:
-                ref_year = pd.to_numeric(self.data.iloc[ref_idx].get('year', np.nan), errors = 'coerce')
-                if (pd.notna(paper_year) and pd.notna(ref_year)):
-                    ref_ages.append(float(paper_year) - float(ref_year))
-                src_name = str(self.data.iloc[ref_idx].get(source_col, 'UNKNOWN')).strip().lower()
-                if (src_name and src_name != 'unknown'):
-                    internal_sources.append(src_name)
-                ref_authors = set([str(a).strip().lower() for a in self.aut[ref_idx] if str(a).strip().upper() != 'UNKNOWN'])
-                if (len(focal_authors.intersection(ref_authors)) > 0):
-                    self_cites += 1
-
-            source_entropy = np.nan
-            source_entropy_norm = np.nan
-            unique_sources = len(set(internal_sources))
-            if (len(internal_sources) > 0 and unique_sources > 0):
-                counts = pd.Series(internal_sources).value_counts(normalize = True).values
-                source_entropy = float(-(counts * np.log(counts)).sum())
-                if (unique_sources > 1):
-                    source_entropy_norm = float(source_entropy / np.log(unique_sources))
-                else:
-                    source_entropy_norm = 0.0
-
-            row = {
-                'Paper ID': str(idx),
-                'Year': int(paper_year) if pd.notna(paper_year) else np.nan,
-                'N References': int(len(refs)),
-                'Unique References': int(len(set(refs))),
-                'N Internal References': int(len(internal_ids)),
-                'Internal Reference Share': float(len(internal_ids) / len(refs)) if len(refs) > 0 else np.nan,
-                'Mean Reference Age': float(np.mean(ref_ages)) if len(ref_ages) > 0 else np.nan,
-                'Median Reference Age': float(np.median(ref_ages)) if len(ref_ages) > 0 else np.nan,
-                'Std Reference Age': float(np.std(ref_ages)) if len(ref_ages) > 0 else np.nan,
-                'Min Reference Age': float(np.min(ref_ages)) if len(ref_ages) > 0 else np.nan,
-                'Max Reference Age': float(np.max(ref_ages)) if len(ref_ages) > 0 else np.nan,
-                'Unique Internal Sources': int(unique_sources),
-                'Source Entropy': source_entropy,
-                'Normalized Source Entropy': source_entropy_norm,
-                'Self Citation Rate': float(self_cites / len(internal_ids)) if len(internal_ids) > 0 else np.nan,
-            }
-            rows.append(row)
-
-        results = pd.DataFrame(rows)
-        self.reference_diversity_table = results
-        return results
+        from .advanced import reference_diversity as _fn
+        return _fn(self, paper_ids = paper_ids)
 
     # Function: Disruption Index
     def disruption_index(self, paper_ids = None, strict_future = True, min_future_citers = 1):
-        selected = self._safe_doc_indices(paper_ids) if (paper_ids is not None) else list(range(self.data.shape[0]))
-        years = pd.to_numeric(self.data['year'], errors = 'coerce').fillna(-1).astype(int).tolist()
-        internal_refs = self._internal_reference_doc_ids()
-
-        citers_of = defaultdict(set)
-        for citing_idx, refs in enumerate(internal_refs):
-            citing_year = years[citing_idx]
-            for cited_idx in refs:
-                if (citing_idx == cited_idx or cited_idx < 0 or cited_idx >= len(years)):
-                    continue
-                cited_year = years[cited_idx]
-                if (strict_future == True and citing_year <= cited_year):
-                    continue
-                if (strict_future == False and citing_year < cited_year):
-                    continue
-                citers_of[cited_idx].add(citing_idx)
-
-        rows = []
-        for focal_idx in selected:
-            focal_year = years[focal_idx]
-            focal_refs = set()
-            for ref_idx in internal_refs[focal_idx]:
-                if (0 <= ref_idx < len(years)):
-                    if (strict_future == True and years[ref_idx] < focal_year):
-                        focal_refs.add(ref_idx)
-                    elif (strict_future == False and years[ref_idx] <= focal_year):
-                        focal_refs.add(ref_idx)
-
-            focal_citers = set([j for j in citers_of.get(focal_idx, set()) if years[j] > focal_year])
-            ref_citers = set()
-            for ref_idx in focal_refs:
-                ref_citers.update([j for j in citers_of.get(ref_idx, set()) if years[j] > focal_year and j != focal_idx])
-
-            n_i = 0
-            n_j = 0
-            for citer_idx in focal_citers:
-                citer_refs = set(internal_refs[citer_idx])
-                if (len(citer_refs.intersection(focal_refs)) > 0):
-                    n_j += 1
-                else:
-                    n_i += 1
-            n_k = len(ref_citers.difference(focal_citers))
-            denom = n_i + n_j + n_k
-            score = float((n_i - n_j) / denom) if denom > 0 else np.nan
-            valid = bool(len(focal_citers) >= int(min_future_citers) and denom > 0)
-            if (valid == False and denom > 0 and len(focal_citers) < int(min_future_citers)):
-                score = np.nan
-
-            rows.append({
-                'Paper ID': str(focal_idx),
-                'Year': int(focal_year) if focal_year >= 0 else np.nan,
-                'N Internal References': int(len(focal_refs)),
-                'N Future Citers': int(len(focal_citers)),
-                'N_i': int(n_i),
-                'N_j': int(n_j),
-                'N_k': int(n_k),
-                'Disruption Index': score,
-                'Valid': valid,
-            })
-
-        results = pd.DataFrame(rows)
-        self.disruption_index_table = results
-        return results
+        from .advanced import disruption_index as _fn
+        return _fn(self, paper_ids = paper_ids, strict_future = strict_future, min_future_citers = min_future_citers)
 
 ############################################################################
 
@@ -7904,6 +7786,35 @@ class pbx_probe():
     def temporal_sg(self, view = "timeline", layers = None, time_mode = "range", start_year = None, end_year = None, center = "paper", selected = None, max_papers = 500, max_references = 300, color_by = "type", size_by = "citations", notebook = True, open_browser = True, save_html = None, preview = True):
         from .tsg import temporal_sg as _tsg
         return _tsg(self, view = view, layers = layers, time_mode = time_mode, start_year = start_year, end_year = end_year, center = center, selected = selected, max_papers = max_papers, max_references = max_references, color_by = color_by, size_by = size_by, notebook = notebook, open_browser = open_browser, save_html = save_html, preview = preview)
+
+############################################################################
+
+    # ---- Advanced scientometric analytics (see pybibx.base.advanced) ----
+
+    # Function: Portfolio Analysis -- BCG-style productivity x impact quadrants
+    def portfolio_analysis(self, entity = 'jou', productivity = 'documents', impact = 'citations', thresholds = 'median', topn = None, drop_unknown = True, view = 'browser', verbose = True):
+        from .advanced import portfolio_analysis as _fn
+        return _fn(self, entity = entity, productivity = productivity, impact = impact, thresholds = thresholds, topn = topn, drop_unknown = drop_unknown, view = view, verbose = verbose)
+
+    # Function: Specialization Analysis -- Activity Index / RCA / Symmetric Index / share
+    def specialization_analysis(self, entity = 'cout', field = 'kwa', metric = 'activity_index', topn_entity = 15, topn_field = 15, min_count = 2, drop_unknown = True, view = 'browser', verbose = True):
+        from .advanced import specialization_analysis as _fn
+        return _fn(self, entity = entity, field = field, metric = metric, topn_entity = topn_entity, topn_field = topn_field, min_count = min_count, drop_unknown = drop_unknown, view = view, verbose = verbose)
+
+    # Function: Collaboration Impact -- solo vs collab impact and centralities
+    def collaboration_impact(self, entity = 'cout', topn = 25, min_documents = 1, drop_unknown = True, view = 'browser', verbose = True):
+        from .advanced import collaboration_impact as _fn
+        return _fn(self, entity = entity, topn = topn, min_documents = min_documents, drop_unknown = drop_unknown, view = view, verbose = verbose)
+
+    # Function: Burst Detection -- Kleinberg two-state discrete model
+    def burst_detection(self, source = 'kwa', method = 'kleinberg', min_frequency = 5, s = 2.0, gamma = 1.0, topn = 30, drop_unknown = True, start = None, end = None, view = 'browser', verbose = True):
+        from .advanced import burst_detection as _fn
+        return _fn(self, source = source, method = method, min_frequency = min_frequency, s = s, gamma = gamma, topn = topn, drop_unknown = drop_unknown, start = start, end = end, view = view, verbose = verbose)
+
+    # Function: Knowledge Diffusion -- temporal or citation-driven concept spread
+    def knowledge_diffusion(self, source_entity = 'cout', target_entity = 'cout', concept_field = 'kwa', mechanism = 'temporal', topn_concepts = 12, topn_entities = 15, min_concept_count = 5, drop_unknown = True, viz = 'auto', view = 'browser', verbose = True):
+        from .advanced import knowledge_diffusion as _fn
+        return _fn(self, source_entity = source_entity, target_entity = target_entity, concept_field = concept_field, mechanism = mechanism, topn_concepts = topn_concepts, topn_entities = topn_entities, min_concept_count = min_concept_count, drop_unknown = drop_unknown, viz = viz, view = view, verbose = verbose)
 
 ############################################################################
 

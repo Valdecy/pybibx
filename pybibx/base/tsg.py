@@ -878,9 +878,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 @keyframes glow-pulse { 0%,100%{opacity:.6} 50%{opacity:1} }
 .loading-glow { animation: glow-pulse 1.6s ease-in-out infinite; }
 
-/* ── Ego centre ring ─────────────────────────────────────── */
-.ego-ring { fill: none; stroke: var(--amber); stroke-width: 1; stroke-dasharray: 5 4; opacity: .4; animation: spin 30s linear infinite; transform-origin: center; }
-@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -1313,29 +1310,61 @@ function getVisibleNodes() {
   // ego filter
   if (state.view === 'ego' && state.selectedId) {
     const ego = state.selectedId;
+    const egoNode = NODE_BY_ID.get(ego);
     const neighbours = new Set([ego]);
+    const egoPapers = new Set();
+
+    // Always keep direct neighbours of the selected node. For a non-paper
+    // focal node, also remember the papers that mediate its relations to
+    // journals, institutions, countries, keywords, references, etc.
     RAW_EDGES.forEach(e => {
       if (e.source === ego || e.target === ego) {
+        const otherId = e.source === ego ? e.target : e.source;
+        const otherNode = NODE_BY_ID.get(otherId);
         neighbours.add(e.source);
         neighbours.add(e.target);
+        if (otherNode && otherNode.type === 'paper') egoPapers.add(otherId);
       }
     });
+
+    if (egoNode && egoNode.type === 'paper') egoPapers.add(ego);
+
+    // Ego view used to stop at one-hop neighbours. That isolated authors,
+    // journals, countries, institutions, and keywords from each other because
+    // their actual relation is paper-mediated: Author -> Paper -> Country,
+    // Author -> Paper -> Journal, Keyword -> Paper -> Institution, etc.
+    // Add those second-hop endpoints when their edge layer is enabled; the
+    // later type filter still decides whether the node category is displayed.
+    if (egoPapers.size) {
+      RAW_EDGES.forEach(e => {
+        if (!state.activeLayers.has(e.edge_type)) return;
+        let otherId = null;
+        if (egoPapers.has(e.source)) otherId = e.target;
+        else if (egoPapers.has(e.target)) otherId = e.source;
+        if (!otherId || otherId === ego) return;
+        neighbours.add(otherId);
+      });
+    }
+
     nodes = nodes.filter(d => neighbours.has(d.id));
   }
 
   return nodes;
 }
 
-// When papers are hidden and the center isn't 'paper', direct paper-mediated
-// edges (e.g. paper→journal) drop out of view. To preserve the relationship,
-// project them: for every paper P, link any visible center entity (e.g. an
-// author) to every visible non-paper entity X reached via an enabled layer.
-// The projected edge inherits the styling of the outward layer (published_in,
-// has_country, …) so it reads exactly like a direct connection.
+// When papers are hidden, direct paper-mediated edges (e.g. author→paper→journal)
+// drop out of view. To preserve the relationship, project them: for every paper
+// P, link any visible focal/center entity to every visible non-paper entity X
+// reached via an enabled layer. In Ego view the selected node is the focal node,
+// even when it is not the configured center. The projected edge inherits the
+// styling of the outward layer (published_in, has_country, …), so it reads like
+// a direct connection without forcing the intermediary paper nodes onscreen.
 function buildProjectedEdges(visibleNodeIds, addEdge) {
   const centerIsRefFamily = state.center === 'reference';
-  function isCenterType(t) {
-    return centerIsRefFamily ? (t === 'reference' || t === 'internal_ref') : t === state.center;
+  const egoProjectionId = (state.view === 'ego' && state.selectedId) ? state.selectedId : null;
+  function isProjectionSource(c) {
+    if (egoProjectionId) return c.other === egoProjectionId;
+    return centerIsRefFamily ? (c.otherType === 'reference' || c.otherType === 'internal_ref') : c.otherType === state.center;
   }
 
   // Group every paper-attached edge under its paper id.
@@ -1358,7 +1387,7 @@ function buildProjectedEdges(visibleNodeIds, addEdge) {
     const targetSide = [];
     for (const c of conns) {
       if (!visibleNodeIds.has(c.other)) continue;
-      if (isCenterType(c.otherType))                  centerSide.push(c);
+      if (isProjectionSource(c))                      centerSide.push(c);
       else if (state.activeLayers.has(c.edgeType))    targetSide.push(c);
     }
     if (!centerSide.length || !targetSide.length) return;
@@ -1386,8 +1415,10 @@ function getVisibleEdges(visibleNodeIds) {
     if (visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target)) addEdge(e);
   }
 
-  // 2) Project through hidden papers when the center isn't 'paper'.
-  if (!state.activeTypes.has('paper') && state.center !== 'paper') {
+  // 2) Project through hidden papers. In ego view this is what allows
+  //    author/journal/country/institution/keyword/reference connections to be
+  //    shown around the selected focal node when paper nodes are hidden.
+  if (!state.activeTypes.has('paper') && (state.center !== 'paper' || state.view === 'ego')) {
     buildProjectedEdges(visibleNodeIds, addEdge);
   }
 
@@ -1538,7 +1569,6 @@ function renderGraph() {
     .on('mouseout', onNodeOut)
     .on('click', onNodeClick);
 
-  nodeGroup.selectAll('.ego-ring').remove();
 
   sim.on('tick', () => {
     simNodes.forEach(d => {
@@ -1553,18 +1583,6 @@ function renderGraph() {
       .attr('y2', e => e.target.y || 0);
 
     nodeSel.attr('transform', d => `translate(${d.x || 0},${d.y || 0})`);
-
-    if (state.view === 'ego' && state.selectedId) {
-      const egoNode = simNodes.find(d => d.id === state.selectedId);
-      if (egoNode) {
-        let ring = nodeGroup.selectAll('.ego-ring').data([egoNode]);
-        ring = ring.join('circle').attr('class', 'ego-ring');
-        ring
-          .attr('cx', egoNode.x || 0)
-          .attr('cy', egoNode.y || 0)
-          .attr('r', nodeRadius(egoNode) + 12);
-      }
-    }
   });
 
   updateDimHighlight();
@@ -1898,9 +1916,65 @@ document.getElementById('btn-reset').addEventListener('click', () => {
 });
 
 // Export HTML
+// Important: export a clean, re-runnable document, not the current live D3 DOM.
+// Serializing document.documentElement.outerHTML after interaction captures the
+// already-rendered <svg> nodes/links. When that file is reopened, the script runs
+// again and draws a second graph, leaving the old nodes fixed in the background.
+function buildCleanExportHtml() {
+  const clone = document.documentElement.cloneNode(true);
+
+  // Clear runtime-rendered SVG content. The embedded JSON data and script remain
+  // intact, so the graph is rendered once, cleanly, when the exported file opens.
+  const svg = clone.querySelector('#main-svg');
+  if (svg) {
+    svg.innerHTML = '';
+    svg.removeAttribute('style');
+  }
+
+  // Reset transient UI state that should not become baked into the export.
+  const searchBox = clone.querySelector('#search-box');
+  if (searchBox) searchBox.setAttribute('value', '');
+
+  const searchResults = clone.querySelector('#search-results');
+  if (searchResults) {
+    searchResults.innerHTML = '';
+    searchResults.setAttribute('style', 'display:none;');
+  }
+
+  const infoPlaceholder = clone.querySelector('#info-placeholder');
+  if (infoPlaceholder) infoPlaceholder.setAttribute('style', 'display:flex;');
+
+  const infoContent = clone.querySelector('#info-content');
+  if (infoContent) {
+    infoContent.innerHTML = '';
+    infoContent.setAttribute('style', 'display:none;');
+  }
+
+  const tooltip = clone.querySelector('#tooltip');
+  if (tooltip) tooltip.setAttribute('style', 'opacity:0;');
+
+  const body = clone.querySelector('body');
+  if (body) {
+    // Remove common browser-extension attributes that sometimes appear in exports.
+    [...body.attributes].forEach(attr => {
+      if (attr.name.startsWith('data-gr-') || attr.name.startsWith('data-new-gr-')) {
+        body.removeAttribute(attr.name);
+      }
+    });
+  }
+
+  return '<!DOCTYPE html>\n' + clone.outerHTML;
+}
+
 document.getElementById('btn-export').addEventListener('click', () => {
-  const blob = new Blob([document.documentElement.outerHTML], {type:'text/html'});
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'tsg_export.html'; a.click();
+  const blob = new Blob([buildCleanExportHtml()], {type:'text/html;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'tsg_export.html';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 500);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

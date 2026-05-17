@@ -25,6 +25,7 @@ except ImportError:
 
 import plotly.graph_objects as go
 import plotly.io as pio
+import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -475,6 +476,41 @@ def _dataset_payload(df, sep='	', preview_limit=20, page=1):
     }
 
 
+def _normalization_to_text(df, sep=';'):
+    import csv as _csv
+    buf = StringIO()
+    safe_df = df.copy() if df is not None else pd.DataFrame(columns=['Normalized String', 'Candidate String'])
+    cols = ['Normalized String', 'Candidate String']
+    for col in cols:
+        if col not in safe_df.columns:
+            safe_df[col] = ''
+    safe_df = safe_df[cols].fillna('').astype(str)
+    safe_df.to_csv(buf, index=False, header=False, sep=sep, quoting=_csv.QUOTE_ALL)
+    return buf.getvalue()
+
+
+def _normalization_payload(df, sep=';', preview_limit=20, page=1):
+    import pandas as pd
+    preview_limit = max(1, int(preview_limit or 20))
+    if df is None or not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(columns=['Normalized String', 'Candidate String'])
+    cols = ['Normalized String', 'Candidate String']
+    for col in cols:
+        if col not in df.columns:
+            df[col] = ''
+    mapping_df = df[cols].fillna('').astype(str).copy()
+    return {
+        'rows': int(mapping_df.shape[0]),
+        'cols': int(mapping_df.shape[1]),
+        'columns': cols,
+        'grid': _df_grid_payload(mapping_df, limit=preview_limit, page=page),
+        'full_grid': _df_grid_full_payload(mapping_df),
+        'csv_text': _normalization_to_text(mapping_df, sep=sep),
+        'sep': sep,
+        'preview_limit': preview_limit
+    }
+
+
 def _load_dataset_into_state(df, db=None, preserve_original=False, filepath=None):
     try:
         from .pbx import pbx_probe
@@ -683,6 +719,66 @@ def dataset_reset():
         page = _safe_int(payload.get('page'), 1)
         _load_dataset_into_state(STATE['original_data'].copy(deep=True), db=STATE.get('db'), preserve_original=True, filepath=STATE.get('filepath'))
         return jsonify({'ok': True, 'message': 'Dataset restored to the original loaded snapshot.', 'docs': int(STATE['pbx'].data.shape[0]), 'db': STATE.get('db'), **_dataset_payload(STATE['pbx'].data, sep=sep, preview_limit=preview_limit, page=page)})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+
+@app.route('/api/normalization/detect', methods=['POST'])
+def normalization_detect():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d = request.json or {}
+    try:
+        sep = _dataset_sep(d.get('sep'), ';')
+        preview_limit = _safe_int(d.get('preview_limit'), 20)
+        page = _safe_int(d.get('page'), 1)
+        df = STATE['pbx'].normalize_entities(
+            entity      = d.get('entity', 'all'),
+            method      = d.get('method', 'fuzzy'),
+            threshold   = float(d.get('threshold', 0.88)),
+            min_count   = int(d.get('min_count', 1)),
+            max_items   = int(d.get('max_items', 500)) if d.get('max_items') not in (None, '', 'null') else 500,
+            sep         = sep,
+            export_path = None,
+            view        = None,
+            verbose     = False,
+        )
+        mapping_df = df[['Normalized String', 'Candidate String']].copy() if not df.empty else pd.DataFrame(columns=['Normalized String', 'Candidate String'])
+        return jsonify({'ok': True, 'message': f'Normalization candidates detected: {int(mapping_df.shape[0])}', **_normalization_payload(mapping_df, sep=sep, preview_limit=preview_limit, page=page), 'diagnostics_html': _df_html(df, index=False, limit=80)})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+
+@app.route('/api/normalization/apply', methods=['POST'])
+def normalization_apply():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d = request.json or {}
+    sep = _dataset_sep(d.get('sep'), ';')
+    dataset_sep = _dataset_sep(d.get('dataset_sep'), '\t')
+    preview_limit = _safe_int(d.get('preview_limit'), 20)
+    page = _safe_int(d.get('page'), 1)
+    entity = d.get('entity', 'all')
+    try:
+        text = d.get('csv_text', '')
+        if not str(text).strip():
+            columns = d.get('columns') or ['Normalized String', 'Candidate String']
+            rows = d.get('rows') or []
+            columns, rows = _normalize_grid_rows(columns, rows)
+            mapping_df = pd.DataFrame(rows, columns=columns, dtype=str).fillna('')
+            text = _normalization_to_text(mapping_df, sep=sep)
+        if not str(text).strip():
+            return jsonify({'ok': False, 'error': 'Normalization mapping is empty'})
+        report = STATE['pbx'].apply_entity_normalization(
+            mapping_text   = text,
+            entity         = entity,
+            sep            = sep,
+            inplace        = True,
+            case_sensitive = bool(d.get('case_sensitive', False)),
+            verbose        = False,
+        )
+        _invalidate_topic_state()
+        return jsonify({'ok': True, 'message': f'Normalization applied and dataset reloaded: {int(report.shape[0])} mapping rows.', 'docs': int(STATE['pbx'].data.shape[0]), 'db': STATE.get('db'), 'normalization_report': _df_html(report, index=False, limit=80), **_dataset_payload(STATE['pbx'].data, sep=dataset_sep, preview_limit=preview_limit, page=page)})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
 
@@ -1884,8 +1980,12 @@ select option{background:var(--sur);}
             <div class="fn-card-icon">🩺</div><div class="fn-card-name">Health Check</div>
             <div class="fn-card-desc">Data quality report — which fields are missing and by how much</div>
           </div>
+          <div class="fn-card" onclick="selectParams('normalize','dataset',this)">
+            <div class="fn-card-icon">🧹</div><div class="fn-card-name">Normalize Entities</div>
+            <div class="fn-card-desc">Detect and apply reviewed Author, Institution, Country, Journal, Keyword, or Reference mappings</div>
+          </div>
         </div>
-        <div class="fn-hint">Click EDA or Health to run immediately.</div>
+        <div class="fn-hint">Click EDA or Health to run immediately, or configure entity normalization.</div>
       </div>
 
       <!-- ── VISUALIZATIONS ── -->
@@ -1973,7 +2073,7 @@ select option{background:var(--sur);}
       <!-- ── SCIENTOMETRIC ANALYTICS ── -->
       <div class="view" id="view-advanced">
         <div class="view-title">Scientometric Analytics</div>
-        <div class="view-desc">Higher-level scientometric indicators: portfolio, specialization, collaboration, burst, diffusion, reference diversity, and disruption analyses using the current loaded dataset.</div>
+        <div class="view-desc">Higher-level scientometric indicators: portfolio, specialization, collaboration impact, collaboration brokerage, burst, diffusion, reference diversity, and disruption analyses using the current loaded dataset.</div>
         <div class="fn-grid">
           <div class="fn-card" onclick="selectParams('adv-portfolio','advanced',this)">
             <div class="fn-card-icon">🧭</div><div class="fn-card-name">Portfolio Analysis</div>
@@ -1986,6 +2086,10 @@ select option{background:var(--sur);}
           <div class="fn-card" onclick="selectParams('adv-collaboration','advanced',this)">
             <div class="fn-card-icon">🤝</div><div class="fn-card-name">Collaboration Impact</div>
             <div class="fn-card-desc">Solo/collaborative output, citations, and network centrality</div>
+          </div>
+          <div class="fn-card" onclick="selectParams('adv-brokerage','advanced',this)">
+            <div class="fn-card-icon">🌉</div><div class="fn-card-name">Collaboration Brokerage</div>
+            <div class="fn-card-desc">Find authors, institutions, or countries that bridge collaboration communities</div>
           </div>
           <div class="fn-card" onclick="selectParams('adv-burst','advanced',this)">
             <div class="fn-card-icon">⚡</div><div class="fn-card-name">Burst Detection</div>
@@ -2060,6 +2164,38 @@ select option{background:var(--sur);}
       <div id="params-empty">
         <div class="pe-icon">⚙️</div>
         <p>Select a function from the <strong>Functions</strong> tab<br>to configure its parameters here.</p>
+      </div>
+
+      <!-- NORMALIZE ENTITIES -->
+      <div class="params-section" id="params-normalize">
+        <div class="params-box">
+          <div class="params-title">Normalize Entities</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Entity</label><select id="norm-entity"><option value="all">All supported entities</option><option value="aut">Authors</option><option value="inst">Institutions</option><option value="cout">Countries</option><option value="jou">Sources/Journals</option><option value="kwa">Authors' Keywords</option><option value="kwp">Keywords Plus</option><option value="ref">References</option></select></div>
+            <div class="param-item"><label class="fl">Detection method</label><select id="norm-method"><option value="fuzzy" selected>Fuzzy</option><option value="token">Token-based</option><option value="exact_clean">Exact after cleaning</option></select></div>
+            <div class="param-item"><label class="fl">Similarity threshold</label><input type="number" id="norm-threshold" min="0" max="1" step="0.01" value="0.88"></div>
+            <div class="param-item"><label class="fl">Minimum count</label><input type="number" id="norm-mincount" min="1" step="1" value="1"></div>
+            <div class="param-item"><label class="fl">Max strings/entity</label><input type="number" id="norm-maxitems" min="100" step="100" value="500"></div>
+            <div class="param-item"><label class="fl">Mapping delimiter</label><select id="norm-sep"><option value=";" selected>Semicolon (;)</option><option value="\t">Tab</option><option value=",">Comma</option><option value="|">Pipe</option></select></div>
+          </div>
+          <div class="callout info help-note">Mapping format has no header: <code>"normalized string";"candidate string"</code>. The candidate string is transformed into the normalized string. Delete rows you do not want to apply.</div>
+          <div class="dataset-toolbar" style="margin-top:10px;">
+            <button type="button" onclick="detectNormalizationCandidates(this)">Detect candidates</button>
+            <button type="button" onclick="applyNormalizationMapping(this)">Apply normalization & reload</button>
+            <button type="button" onclick="exportNormalizationMapping()">Export mapping CSV</button>
+            <label class="dataset-upload-label">Import mapping CSV<input type="file" id="norm-file-input" accept=".csv,.txt,.tsv" onchange="loadNormalizationMappingFile(this)"></label>
+            <button type="button" onclick="addNormalizationRow()">Add row</button>
+            <button type="button" onclick="removeNormalizationRow()">Remove selected row</button>
+          </div>
+          <div id="norm-meta" class="dataset-meta"></div>
+          <div id="norm-grid" class="grid-shell" style="margin-top:10px;"></div>
+          <div class="dataset-grid-pager">
+            <button type="button" class="dataset-inline-btn" onclick="changeNormalizationPage(-1)">◀ Prev</button>
+            <button type="button" class="dataset-inline-btn" onclick="changeNormalizationPage(1)">Next ▶</button>
+            <span class="page-label" id="norm-page-label">Page 1 of 1</span>
+          </div>
+          <div class="callout warn help-note">Applying normalization updates <code>bibfile.data</code>, recomputes PyBibX objects, clears previous results, and refreshes the Dataset and Object tables. This follows the same reload behavior used after dataset merge/edit operations.</div>
+        </div>
       </div>
 
       <!-- FILTER -->
@@ -2619,6 +2755,21 @@ select option{background:var(--sur);}
         </div>
       </div>
 
+
+      <!-- ADVANCED: COLLABORATION BROKERAGE -->
+      <div class="params-section" id="params-adv-brokerage">
+        <div class="params-box">
+          <div class="params-title">Collaboration Brokerage Parameters</div>
+          <div class="params-grid">
+            <div class="param-item"><label class="fl">Entity</label><select id="advbr-entity"><option value="aut">Authors</option><option value="inst">Institutions</option><option value="cout">Countries</option></select></div>
+            <div class="param-item"><label class="fl">Top N</label><input type="number" id="advbr-topn" value="40" min="1"/></div>
+            <div class="param-item"><label class="fl">Minimum documents</label><input type="number" id="advbr-min" value="1" min="1"/></div>
+          </div>
+          <div class="checkbox-row"><input type="checkbox" id="advbr-drop" checked/><span>Drop unknown / empty entities</span></div>
+          <button class="run-btn" onclick="runAdvanced('brokerage',this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Run</button>
+        </div>
+      </div>
+
       <!-- ADVANCED: BURST DETECTION -->
       <div class="params-section" id="params-adv-burst">
         <div class="params-box">
@@ -2874,6 +3025,11 @@ let _datasetSelectedRow = null;
 let _datasetRawVisible = false;
 let _datasetColumns = [];
 let _datasetAllRows = [];
+let _normPage = 1;
+let _normTotalPages = 1;
+let _normSelectedRow = null;
+let _normColumns = ['Normalized String', 'Candidate String'];
+let _normAllRows = [];
 let _topicModelReady = false;
 let _wordEmbeddingsReady = false;
 let _currentAIArea = 'topics';
@@ -3426,6 +3582,9 @@ function mountGrid(host, payload, opts = {}){
   const columns = Array.isArray(payload?.columns) ? payload.columns : [];
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   const editable = !!opts.editable;
+  const onSelect = typeof opts.onSelect === 'function' ? opts.onSelect : selectDatasetRow;
+  const onCellBlur = typeof opts.onCellBlur === 'function' ? opts.onCellBlur : syncGridCellToDatasetState;
+  const selectedRow = Number.isInteger(opts.selectedRow) ? opts.selectedRow : _datasetSelectedRow;
   const tableClass = editable ? 'grid-table is-editable' : 'grid-table is-readonly';
   if(!columns.length){
     host.innerHTML = '<div class="grid-empty">No data available.</div>';
@@ -3465,12 +3624,12 @@ function mountGrid(host, payload, opts = {}){
   if(!table) return;
   table.querySelectorAll('.col-resizer').forEach(handle => handle.addEventListener('mousedown', initGridColumnResize));
   table.querySelectorAll('tbody .row-selector').forEach(cell => {
-    cell.addEventListener('click', () => selectDatasetRow(Number(cell.dataset.absRow)));
+    cell.addEventListener('click', () => onSelect(Number(cell.dataset.absRow)));
   });
   table.querySelectorAll('tbody tr').forEach(tr => {
     tr.addEventListener('click', (ev) => {
       if(ev.target && ev.target.classList && ev.target.classList.contains('col-resizer')) return;
-      if(editable) selectDatasetRow(Number(tr.dataset.absRow));
+      if(editable) onSelect(Number(tr.dataset.absRow));
     });
   });
   if(editable){
@@ -3478,9 +3637,9 @@ function mountGrid(host, payload, opts = {}){
       td.addEventListener('focus', () => {
         const current = td.innerText;
         td.textContent = current;
-        selectDatasetRow(Number(td.dataset.absRow));
+        onSelect(Number(td.dataset.absRow));
       });
-      td.addEventListener('blur', syncGridCellToDatasetState);
+      td.addEventListener('blur', onCellBlur);
       td.addEventListener('keydown', (ev) => {
         if(ev.key === 'Enter'){
           ev.preventDefault();
@@ -3489,7 +3648,7 @@ function mountGrid(host, payload, opts = {}){
       });
     });
   }
-  if(editable && Number.isInteger(_datasetSelectedRow)) selectDatasetRow(_datasetSelectedRow);
+  if(editable && Number.isInteger(selectedRow)) onSelect(selectedRow);
 }
 
 function syncGridCellToDatasetState(ev){
@@ -3634,6 +3793,219 @@ async function resetDatasetChanges(){
     toast('✓ Dataset restored and all objects were refreshed', 'ok');
   }catch(e){ hideSpinner(); appendError(e.message); toast('Error: ' + e.message, 'err'); }
 }
+// ── Entity normalization mapping editor ──
+function getNormalizationSeparator(){
+  const el = document.getElementById('norm-sep');
+  return el ? el.value : ';';
+}
+
+function getNormalizationPageSize(){
+  return Math.max(1, parseInt((document.getElementById('dataset-preview-limit') || {}).value || '20', 10));
+}
+
+function normalizeNormRows(rows){
+  return (rows || []).map(row => {
+    const r = Array.isArray(row) ? row.slice(0, 2) : [row, ''];
+    while(r.length < 2) r.push('');
+    return r.map(v => String(v ?? ''));
+  });
+}
+
+function getNormTotalPages(){
+  return Math.max(1, Math.ceil((_normAllRows.length || 0) / getNormalizationPageSize()));
+}
+
+function getNormPayload(){
+  const pageSize = getNormalizationPageSize();
+  _normTotalPages = getNormTotalPages();
+  _normPage = Math.min(Math.max(1, _normPage || 1), _normTotalPages);
+  const start = (_normPage - 1) * pageSize;
+  const rows = _normAllRows.slice(start, start + pageSize);
+  return {
+    columns: _normColumns.slice(),
+    rows,
+    visible_rows: rows.length,
+    total_rows: _normAllRows.length,
+    total_cols: _normColumns.length,
+    page: _normPage,
+    total_pages: _normTotalPages,
+    page_size: pageSize,
+    start_row_index: start,
+    end_row_index: rows.length ? start + rows.length - 1 : start
+  };
+}
+
+function selectNormalizationRow(absRow){
+  _normSelectedRow = Number.isInteger(absRow) ? absRow : null;
+  const grid = document.getElementById('norm-grid');
+  if(!grid) return;
+  grid.querySelectorAll('tbody tr').forEach(tr => tr.classList.toggle('selected', Number(tr.dataset.absRow) === _normSelectedRow));
+}
+
+function syncNormalizationCell(ev){
+  const td = ev.currentTarget;
+  if(!td) return;
+  const absRow = Number(td.dataset.absRow || 0);
+  const colIdx = Number(td.dataset.col || 0);
+  if(!Number.isInteger(absRow) || absRow < 0 || absRow >= _normAllRows.length) return;
+  if(!Array.isArray(_normAllRows[absRow])) _normAllRows[absRow] = ['', ''];
+  while(_normAllRows[absRow].length < 2) _normAllRows[absRow].push('');
+  const value = td.innerText.replace(/\n/g, '').replace(/\r/g, ' ');
+  _normAllRows[absRow][colIdx] = value;
+  td.innerHTML = `<span class="cell-content">${escapeHtml(value)}</span>`;
+  selectNormalizationRow(absRow);
+  updateNormalizationMeta();
+}
+
+function updateNormalizationMeta(){
+  const meta = document.getElementById('norm-meta');
+  if(!meta) return;
+  const sep = getNormalizationSeparator();
+  const sepLabel = sep === '\t' ? 'Tab' : sep;
+  const payload = getNormPayload();
+  meta.innerHTML = `<span>${Number(_normAllRows.length || 0).toLocaleString()} mapping rows</span><span>Delimiter: ${escapeHtml(sepLabel)}</span><span>Visible in grid: ${Number(payload.visible_rows || 0).toLocaleString()}</span><span>Format: normalized → candidate</span>`;
+}
+
+function renderNormalizationGrid(){
+  const grid = document.getElementById('norm-grid');
+  const label = document.getElementById('norm-page-label');
+  if(!grid) return;
+  const payload = getNormPayload();
+  mountGrid(grid, payload, {editable:true, caption:'Normalization mapping CSV', onSelect:selectNormalizationRow, onCellBlur:syncNormalizationCell, selectedRow:_normSelectedRow});
+  if(label) label.textContent = `Page ${payload.page} of ${payload.total_pages}`;
+  updateNormalizationMeta();
+}
+
+function setNormalizationFromPayload(d){
+  const full = d && d.full_grid ? d.full_grid : {};
+  _normColumns = ['Normalized String', 'Candidate String'];
+  _normAllRows = normalizeNormRows(full.rows || []);
+  _normPage = Number((d && d.grid && d.grid.page) || 1);
+  _normSelectedRow = _normAllRows.length ? 0 : null;
+  renderNormalizationGrid();
+}
+
+function addNormalizationRow(){
+  const at = Number.isInteger(_normSelectedRow) ? _normSelectedRow + 1 : _normAllRows.length;
+  _normAllRows.splice(Math.max(0, at), 0, ['', '']);
+  _normSelectedRow = Math.max(0, at);
+  _normPage = Math.floor(_normSelectedRow / getNormalizationPageSize()) + 1;
+  renderNormalizationGrid();
+}
+
+function removeNormalizationRow(){
+  if(!Number.isInteger(_normSelectedRow)){
+    toast('Select a mapping row first', 'err');
+    return;
+  }
+  if(_normSelectedRow < 0 || _normSelectedRow >= _normAllRows.length){
+    toast('Selected mapping row is out of range', 'err');
+    return;
+  }
+  _normAllRows.splice(_normSelectedRow, 1);
+  _normSelectedRow = _normAllRows.length ? Math.min(_normSelectedRow, _normAllRows.length - 1) : null;
+  _normPage = Number.isInteger(_normSelectedRow) ? Math.floor(_normSelectedRow / getNormalizationPageSize()) + 1 : 1;
+  renderNormalizationGrid();
+}
+
+function changeNormalizationPage(delta){
+  _normPage = Math.min(Math.max(1, _normPage + Number(delta || 0)), getNormTotalPages());
+  renderNormalizationGrid();
+}
+
+function normalizationRowsToText(){
+  const sep = getNormalizationSeparator();
+  return _normAllRows.map(row => normalizeNormRows([row])[0].map(cell => serializeDelimitedCell(cell, sep)).join(sep)).join('\n');
+}
+
+function parseDelimitedText(text, sep){
+  const lines = String(text || '').replace(/^\ufeff/, '').split(/\r?\n/).filter(line => line.trim() !== '');
+  return lines.map(line => parseDelimitedLine(line, sep));
+}
+
+async function detectNormalizationCandidates(btn){
+  setLoading(btn, true);
+  showSpinner('Detecting normalization candidates…');
+  try{
+    const body = {
+      entity: document.getElementById('norm-entity').value,
+      method: document.getElementById('norm-method').value,
+      threshold: document.getElementById('norm-threshold').value,
+      min_count: document.getElementById('norm-mincount').value,
+      max_items: document.getElementById('norm-maxitems').value,
+      sep: getNormalizationSeparator(),
+      preview_limit: getNormalizationPageSize(),
+      page: 1
+    };
+    const d = await post('/api/normalization/detect', body);
+    hideSpinner();
+    if(!d.ok){ appendError((d.error || 'Failed to detect normalization candidates') + '\n\n' + (d.trace || '')); toast('Error: ' + d.error, 'err'); switchTab('results'); return; }
+    setNormalizationFromPayload(d);
+    clearOutput();
+    appendHtml(`<h2>Entity Normalization Candidates</h2><div class="callout info">${escapeHtml(d.message || 'Candidates detected. Review, edit, delete, add, import, or export rows before applying.')}</div>${d.diagnostics_html || ''}`);
+    toast('✓ Normalization candidates ready for review', 'ok');
+    switchTab('parameters');
+  }catch(e){ hideSpinner(); appendError(e.message); toast('Error: ' + e.message, 'err'); }
+  finally{ setLoading(btn, false); }
+}
+
+async function applyNormalizationMapping(btn){
+  if(!_normAllRows.length){
+    toast('No normalization mapping rows to apply', 'err');
+    return;
+  }
+  setLoading(btn, true);
+  showSpinner('Applying normalization and reloading dataset…');
+  try{
+    const d = await post('/api/normalization/apply', {
+      entity: document.getElementById('norm-entity').value,
+      sep: getNormalizationSeparator(),
+      dataset_sep: getDatasetSeparatorValue(),
+      columns: _normColumns,
+      rows: _normAllRows,
+      preview_limit: getDatasetPreviewLimit(),
+      page: getDatasetPage()
+    });
+    hideSpinner();
+    if(!d.ok){ appendError((d.error || 'Failed to apply normalization') + '\n\n' + (d.trace || '')); toast('Error: ' + d.error, 'err'); switchTab('results'); return; }
+    _loaded = true;
+    enableAnalysis();
+    clearOutput();
+    appendHtml(`<h2>Entity Normalization Applied</h2><div class="callout info">${escapeHtml(d.message || 'Normalization applied and dataset reloaded.')}</div>${d.normalization_report || ''}`);
+    await syncDatasetDerivedViews({datasetPayload: d, switchToDataset: true});
+    const activeCard = document.querySelector('#view-dataset .fn-card.active');
+    if(activeCard) activeCard.classList.remove('active');
+    toast('✓ Normalization applied; dataset and objects were refreshed', 'ok');
+  }catch(e){ hideSpinner(); appendError(e.message); toast('Error: ' + e.message, 'err'); }
+  finally{ setLoading(btn, false); }
+}
+
+function exportNormalizationMapping(){
+  try{
+    triggerDownload('normalization_mapping.csv', normalizationRowsToText(), 'text/csv;charset=utf-8');
+    toast('✓ Normalization mapping exported', 'ok');
+  }catch(e){ toast('Error: ' + e.message, 'err'); }
+}
+
+function loadNormalizationMappingFile(inp){
+  const f = inp && inp.files && inp.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      const rows = parseDelimitedText(reader.result || '', getNormalizationSeparator());
+      _normAllRows = normalizeNormRows(rows);
+      _normSelectedRow = _normAllRows.length ? 0 : null;
+      _normPage = 1;
+      renderNormalizationGrid();
+      toast('✓ Normalization mapping imported', 'ok');
+    }catch(e){ toast('Error: ' + e.message, 'err'); }
+    finally{ if(inp) inp.value = ''; }
+  };
+  reader.onerror = () => { toast('Error reading mapping file', 'err'); if(inp) inp.value = ''; };
+  reader.readAsText(f, 'utf-8');
+}
+
 
 // ══ View switching ══
 function showView(id, el, aiArea=null){
@@ -4034,6 +4406,12 @@ function runAdvanced(kind, btn){
       min_documents: document.getElementById('advc-min').value,
       drop_unknown: document.getElementById('advc-drop').checked
     },
+    brokerage: {
+      entity: document.getElementById('advbr-entity').value,
+      topn: document.getElementById('advbr-topn').value,
+      min_documents: document.getElementById('advbr-min').value,
+      drop_unknown: document.getElementById('advbr-drop').checked
+    },
     burst: {
       source: document.getElementById('advb-source').value,
       method: document.getElementById('advb-method').value,
@@ -4061,6 +4439,7 @@ function runAdvanced(kind, btn){
     portfolio: '/api/portfolio_analysis',
     specialization: '/api/specialization_analysis',
     collaboration: '/api/collaboration_impact',
+    brokerage: '/api/collaboration_brokerage',
     burst: '/api/burst_detection',
     diffusion: '/api/knowledge_diffusion'
   };
@@ -4068,6 +4447,7 @@ function runAdvanced(kind, btn){
     portfolio: 'Portfolio Analysis',
     specialization: 'Specialization Analysis',
     collaboration: 'Collaboration Impact',
+    brokerage: 'Collaboration Brokerage',
     burst: 'Burst Detection',
     diffusion: 'Knowledge Diffusion'
   };
@@ -4603,6 +4983,29 @@ function clearOutput(){
   window._resultFilter = 'all';
 }
 
+function appendHtml(html, label='Output'){
+  const body = document.getElementById('output-body');
+  const empty = document.getElementById('empty-out');
+  if(empty) empty.style.display='none';
+  const card = makeOutItem(label);
+  const tabs = card.querySelector('.out-item-tabs');
+  const content = card.querySelector('.out-item-body');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'out-tab active';
+  btn.textContent = 'Result';
+  const panel = document.createElement('div');
+  panel.className = 'out-panel active';
+  panel.innerHTML = html || '';
+  tabs.appendChild(btn);
+  content.appendChild(panel);
+  body.prepend(card);
+  const badge = document.getElementById('results-badge');
+  _resultCount++;
+  badge.textContent = _resultCount;
+  badge.style.display = 'inline-block';
+}
+
 function appendError(message){
   renderResult({result:{type:'text', value:String(message || 'Unknown error')}}, 'Error');
 }
@@ -4806,6 +5209,23 @@ def collaboration_impact_route():
         pbx.collaboration_impact,
         entity        = d.get('entity', 'cout'),
         topn          = int(d['topn']) if d.get('topn') not in (None, '', 'null') else 25,
+        min_documents = int(d.get('min_documents', 1)),
+        drop_unknown  = bool(d.get('drop_unknown', True)),
+        view          = 'notebook',
+        verbose       = False,
+    ))
+
+
+@app.route('/api/collaboration_brokerage', methods=['POST'])
+def collaboration_brokerage_route():
+    if not STATE['pbx']:
+        return jsonify({'ok': False, 'error': 'No dataset loaded'})
+    d   = request.json or {}
+    pbx = STATE['pbx']
+    return jsonify(run_fn(
+        pbx.collaboration_brokerage,
+        entity        = d.get('entity', 'aut'),
+        topn          = int(d['topn']) if d.get('topn') not in (None, '', 'null') else 40,
         min_documents = int(d.get('min_documents', 1)),
         drop_unknown  = bool(d.get('drop_unknown', True)),
         view          = 'notebook',

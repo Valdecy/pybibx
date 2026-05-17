@@ -9,6 +9,9 @@
 #   portfolio_analysis(pbx, ...)        - BCG-style productivity x impact
 #   specialization_analysis(pbx, ...)   - Activity Index / RCA / share matrix
 #   collaboration_impact(pbx, ...)      - Solo vs collab impact + centralities
+#   collaboration_brokerage(pbx, ...)   - Collaboration brokerage / bridge roles
+#   normalize_entities(pbx, ...)        - Detect candidate entity normalization mappings
+#   apply_entity_normalization(pbx, ...) - Apply reviewed entity normalization mappings
 #   burst_detection(pbx, ...)           - Kleinberg 2-state discrete bursts
 #   knowledge_diffusion(pbx, ...)       - Temporal or citation-driven diffusion
 #   reference_diversity(pbx, ...)        - Reference-base breadth, age, source entropy
@@ -23,7 +26,12 @@
 from __future__ import annotations
 
 import math
+import csv
+import re
+import unicodedata
 from collections import defaultdict
+from difflib import SequenceMatcher
+from io import StringIO
 from typing      import Any, Dict, List, Optional, Tuple
 
 import numpy  as np
@@ -323,6 +331,491 @@ def _is_unknown(value: Any) -> bool:
         return True
     s = str(value).strip().lower()
     return s == '' or s == 'unknown'
+
+
+def _clean_entity_items(items, drop_unknown: bool = True) -> List[str]:
+    """Clean, deduplicate, and preserve order for per-paper entity lists."""
+    seen = set()
+    out: List[str] = []
+    for item in (items or []):
+        s = str(item).strip()
+        if not s:
+            continue
+        if drop_unknown and _is_unknown(s):
+            continue
+        key = s.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(s)
+    return out
+
+
+def _minmax(values: pd.Series, fallback: float = 0.0) -> pd.Series:
+    """Return min-max normalized numeric values as a pandas Series."""
+    vals = pd.to_numeric(values, errors='coerce').replace([np.inf, -np.inf], np.nan)
+    if vals.notna().sum() == 0:
+        return pd.Series([fallback] * len(vals), index=values.index, dtype=float)
+    lo, hi = float(vals.min()), float(vals.max())
+    if hi == lo:
+        return pd.Series([0.5] * len(vals), index=values.index, dtype=float)
+    return ((vals - lo) / (hi - lo)).fillna(fallback).astype(float)
+
+
+def _pair_key(a: str, b: str) -> Tuple[str, str]:
+    """Stable undirected pair key."""
+    return tuple(sorted((str(a), str(b))))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Entity normalization helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_NORMALIZATION_MAIN_ALIASES = ['aut', 'inst', 'cout', 'jou', 'kwa', 'kwp', 'ref']
+
+_NORMALIZATION_SOURCE_COLUMNS: Dict[str, List[str]] = {
+    'aut':  ['author'],
+    'kwa':  ['author_keywords'],
+    'kwp':  ['keywords'],
+    'jou':  ['abbrev_source_title', 'source_title'],
+    'ref':  ['references'],
+    'lan':  ['language'],
+    'inst': ['institution', 'affiliation', 'affiliation_', 'correspondence_address1'],
+    'cout': ['country', 'CU', 'affiliation', 'affiliation_', 'correspondence_address1'],
+}
+
+_TOKENIZED_COLUMNS = {
+    'author': ' and ',
+    'author_keywords': ';',
+    'keywords': ';',
+    'references': ';',
+    'abbrev_source_title': ';',
+    'source_title': ';',
+    'language': '.',
+    'country': ';',
+    'CU': ';',
+    'institution': ';',
+}
+
+
+def _strip_accents(text: Any) -> str:
+    text = '' if text is None else str(text)
+    text = unicodedata.normalize('NFKD', text)
+    return ''.join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def _norm_compare(text: Any) -> str:
+    """Comparison key used only for matching; display strings are preserved."""
+    s = _strip_accents(text).lower().strip()
+    s = s.replace('&', ' and ')
+    s = re.sub(r"['’`´]", '', s)
+    s = re.sub(r'[^a-z0-9]+', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def _token_similarity(a: str, b: str) -> float:
+    ca, cb = _norm_compare(a), _norm_compare(b)
+    if not ca or not cb:
+        return 0.0
+    sa, sb = set(ca.split()), set(cb.split())
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    denom = max(len(sa), len(sb))
+    jacc = inter / denom if denom else 0.0
+    seq = SequenceMatcher(None, ' '.join(sorted(sa)), ' '.join(sorted(sb))).ratio()
+    return float(max(jacc, seq))
+
+
+def _entity_similarity(a: str, b: str, method: str = 'fuzzy') -> float:
+    ca, cb = _norm_compare(a), _norm_compare(b)
+    if not ca or not cb:
+        return 0.0
+    if method == 'exact_clean':
+        return 1.0 if ca == cb else 0.0
+    if method == 'token':
+        return _token_similarity(a, b)
+    return float(max(SequenceMatcher(None, ca, cb).ratio(), _token_similarity(a, b) * 0.96))
+
+
+def _normalization_bucket_key(text: str) -> str:
+    c = _norm_compare(text)
+    if not c:
+        return ''
+    toks = c.split()
+    if toks:
+        return toks[0][0]
+    return c[0]
+
+
+def _safe_mapping_rows_from_text(text: str, sep: str = ';') -> List[List[str]]:
+    rows: List[List[str]] = []
+    if text is None:
+        return rows
+    text = str(text).lstrip('\ufeff')
+    reader = csv.reader(StringIO(text), delimiter=sep, quotechar='"')
+    for row in reader:
+        vals = [str(v).strip() for v in row]
+        if not vals or all(v == '' for v in vals):
+            continue
+        rows.append(vals)
+    return rows
+
+
+def _mapping_dict_from_pairs(pairs: List[Tuple[str, str]], case_sensitive: bool = False) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    clean_mapping: Dict[str, str] = {}
+    conflicts: Dict[str, set] = defaultdict(set)
+    for candidate, normalized in pairs:
+        cand = '' if candidate is None else str(candidate).strip()
+        norm = '' if normalized is None else str(normalized).strip()
+        if not cand or not norm or cand == norm:
+            continue
+        key = cand if case_sensitive else cand.lower()
+        if key in mapping and mapping[key] != norm:
+            conflicts[cand].update({mapping[key], norm})
+        mapping[key] = norm
+        ckey = _norm_compare(cand)
+        if ckey:
+            if ckey in clean_mapping and clean_mapping[ckey] != norm:
+                conflicts[cand].update({clean_mapping[ckey], norm})
+            clean_mapping[ckey] = norm
+    if conflicts:
+        msg = '; '.join(f"{k!r} -> {sorted(v)}" for k, v in conflicts.items())
+        raise ValueError(f'Ambiguous normalization mapping detected: {msg}')
+    # Store cleaned keys with a sentinel prefix so exact and clean matching can coexist.
+    for k, v in clean_mapping.items():
+        mapping['__clean__' + k] = v
+    return mapping
+
+
+def _replace_token_value(value: Any, mapping: Dict[str, str], case_sensitive: bool = False) -> str:
+    s = '' if value is None or pd.isna(value) else str(value).strip()
+    if not s:
+        return s
+    key = s if case_sensitive else s.lower()
+    if key in mapping:
+        return mapping[key]
+    ckey = '__clean__' + _norm_compare(s)
+    if ckey in mapping:
+        return mapping[ckey]
+    return s
+
+
+def _split_author_field(text: str) -> List[str]:
+    return [p.strip() for p in re.split(r'\s+and\s+', str(text), flags=re.IGNORECASE) if p.strip()]
+
+
+def _replace_in_tokenized_cell(value: Any, sep_token: str, mapping: Dict[str, str], case_sensitive: bool = False) -> str:
+    if value is None or pd.isna(value):
+        return ''
+    text = str(value)
+    if not text.strip():
+        return text
+    if sep_token == ' and ':
+        parts = _split_author_field(text)
+        return ' and '.join(_replace_token_value(p, mapping, case_sensitive=case_sensitive) for p in parts)
+    sep = sep_token
+    parts = [p.strip() for p in text.split(sep)]
+    if len(parts) <= 1:
+        return _replace_token_value(text, mapping, case_sensitive=case_sensitive)
+    return (sep + ' ').join(_replace_token_value(p, mapping, case_sensitive=case_sensitive) for p in parts)
+
+
+def _replace_in_free_text(value: Any, pairs: List[Tuple[str, str]], case_sensitive: bool = False) -> str:
+    if value is None or pd.isna(value):
+        return ''
+    text = str(value)
+    if not text:
+        return text
+    flags = 0 if case_sensitive else re.IGNORECASE
+    # Longest candidates first avoids partial replacement before longer variants.
+    for candidate, normalized in sorted(pairs, key=lambda kv: len(str(kv[0])), reverse=True):
+        cand = str(candidate).strip()
+        norm = str(normalized).strip()
+        if not cand or not norm or cand == norm:
+            continue
+        pattern = re.compile(r'(?<!\w)' + re.escape(cand) + r'(?!\w)', flags=flags)
+        text = pattern.sub(norm, text)
+    return text
+
+
+def _candidate_pairs_from_mapping_rows(rows: List[List[str]], entity: str = 'aut') -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Parse no-header mapping rows.
+
+    Two-column format, for a single entity:
+        normalized_string ; candidate_string
+
+    Three-column mixed format, for entity='all':
+        entity ; normalized_string ; candidate_string
+    """
+    out: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+    global_alias = _resolve_entity_alias(entity, default='aut') if str(entity).strip().lower() != 'all' else 'all'
+    for row in rows:
+        if len(row) >= 3 and str(row[0]).strip().lower() in set(_ENTITY_ALIASES.keys()) | set(_ENTITY_TABLE.keys()):
+            alias = _resolve_entity_alias(row[0], default='aut')
+            normalized, candidate = row[1], row[2]
+        elif len(row) >= 2:
+            aliases = _NORMALIZATION_MAIN_ALIASES if global_alias == 'all' else [global_alias]
+            normalized, candidate = row[0], row[1]
+            for alias in aliases:
+                if str(normalized).strip() and str(candidate).strip() and str(normalized).strip() != str(candidate).strip():
+                    out[alias].append((str(candidate).strip(), str(normalized).strip()))
+            continue
+        else:
+            continue
+        if str(normalized).strip() and str(candidate).strip() and str(normalized).strip() != str(candidate).strip():
+            out[alias].append((str(candidate).strip(), str(normalized).strip()))
+    return dict(out)
+
+
+def _apply_pairs_to_dataframe(df: pd.DataFrame, alias: str, pairs: List[Tuple[str, str]], case_sensitive: bool = False) -> pd.DataFrame:
+    if df is None or len(pairs) == 0:
+        return df
+    out = df.copy(deep=True)
+    mapping = _mapping_dict_from_pairs(pairs, case_sensitive=case_sensitive)
+    for col in _NORMALIZATION_SOURCE_COLUMNS.get(alias, []):
+        if col not in out.columns:
+            continue
+        sep_token = _TOKENIZED_COLUMNS.get(col)
+        if sep_token is not None:
+            out[col] = out[col].apply(lambda x: _replace_in_tokenized_cell(x, sep_token, mapping, case_sensitive=case_sensitive))
+        else:
+            out[col] = out[col].apply(lambda x: _replace_in_free_text(x, pairs, case_sensitive=case_sensitive))
+    return out
+
+
+def _normalization_export(df: pd.DataFrame, export_path: Optional[str], sep: str = ';') -> None:
+    if not export_path:
+        return
+    export_df = df[['Normalized String', 'Candidate String']].copy() if not df.empty else pd.DataFrame(columns=['Normalized String', 'Candidate String'])
+    export_df.to_csv(export_path, sep=sep, header=False, index=False, quoting=csv.QUOTE_ALL)
+
+
+def normalize_entities(
+    pbx,
+    entity: str = 'all',
+    method: str = 'fuzzy',
+    threshold: float = 0.88,
+    min_count: int = 1,
+    max_items: Optional[int] = 500,
+    sep: str = ';',
+    export_path: Optional[str] = None,
+    view: Optional[str] = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Detect candidate entity-normalization mappings without modifying the dataset.
+
+    The returned table uses the safe manual workflow format:
+    ``Normalized String`` ; ``Candidate String``.  To reject a suggested mapping,
+    users delete the row before applying it with ``apply_entity_normalization``.
+
+    Parameters
+    ----------
+    pbx : pybibx pbx instance
+        Active PyBibX object.
+    entity : {'all', 'aut', 'inst', 'cout', 'jou', 'kwa', 'kwp', 'ref'} or aliases
+        Entity family to inspect.
+    method : {'fuzzy', 'token', 'exact_clean'}, default='fuzzy'
+        Similarity strategy used for detection.
+    threshold : float, default=0.88
+        Similarity threshold from 0 to 1.
+    min_count : int, default=1
+        Minimum observed frequency for a string to be inspected.
+    max_items : int or None, default=500
+        Safety cap per entity family. Use None to compare all unique strings.
+    sep : str, default=';'
+        Delimiter used when export_path is provided.
+    export_path : str or None
+        Optional no-header mapping CSV path. Fields are quoted.
+    view : {'browser', 'notebook', None}, default=None
+        If not None, shows a compact Plotly bar chart of candidate counts.
+    verbose : bool, default=True
+        Print a compact summary.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Candidate mapping table with canonical/candidate strings and diagnostics.
+    """
+    method = str(method or 'fuzzy').strip().lower()
+    if method not in {'fuzzy', 'token', 'exact_clean'}:
+        raise ValueError("method must be 'fuzzy', 'token', or 'exact_clean'")
+    try:
+        threshold = float(threshold)
+    except Exception:
+        threshold = 0.88
+    threshold = max(0.0, min(1.0, threshold))
+    min_count = max(1, int(min_count or 1))
+
+    aliases = _NORMALIZATION_MAIN_ALIASES if str(entity).strip().lower() == 'all' else [_resolve_entity_alias(entity, default='aut')]
+    rows: List[Dict[str, Any]] = []
+
+    for alias in aliases:
+        _, u_list, counts, _ = _get_entity_data(pbx, alias)
+        count_map = {str(item): int(counts[i]) if i < len(counts) else 1 for i, item in enumerate(u_list)}
+        values = [str(v).strip() for v in u_list if str(v).strip() and not _is_unknown(v) and count_map.get(str(v), 1) >= min_count]
+        # Keep the most frequent values when a safety cap is requested.
+        if max_items is not None and len(values) > int(max_items):
+            values = sorted(values, key=lambda x: (count_map.get(x, 0), len(x)), reverse=True)[:int(max_items)]
+        if len(values) < 2:
+            continue
+
+        # Blocking drastically reduces accidental O(n²) comparisons for large reference lists.
+        buckets: Dict[str, List[str]] = defaultdict(list)
+        for val in values:
+            buckets[_normalization_bucket_key(val)].append(val)
+
+        parent = {v: v for v in values}
+        best_sim: Dict[Tuple[str, str], float] = {}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for bucket_vals in buckets.values():
+            n = len(bucket_vals)
+            for i in range(n):
+                a = bucket_vals[i]
+                ca = _norm_compare(a)
+                if not ca:
+                    continue
+                for j in range(i + 1, n):
+                    b = bucket_vals[j]
+                    cb = _norm_compare(b)
+                    if not cb:
+                        continue
+                    # Cheap length guard for fuzzy/token; exact_clean still needs equality check.
+                    if method != 'exact_clean':
+                        lmin, lmax = min(len(ca), len(cb)), max(len(ca), len(cb))
+                        if lmax and lmin / lmax < 0.45:
+                            continue
+                    sim = _entity_similarity(a, b, method=method)
+                    if sim >= threshold and a != b:
+                        union(a, b)
+                        best_sim[_pair_key(a, b)] = sim
+
+        comps: Dict[str, List[str]] = defaultdict(list)
+        for val in values:
+            comps[find(val)].append(val)
+
+        for comp in comps.values():
+            if len(comp) < 2:
+                continue
+            canonical = sorted(comp, key=lambda x: (count_map.get(x, 0), len(_norm_compare(x)), len(x)), reverse=True)[0]
+            for cand in sorted(comp, key=lambda x: x.lower()):
+                if cand == canonical:
+                    continue
+                sim = best_sim.get(_pair_key(canonical, cand), _entity_similarity(canonical, cand, method=method))
+                rows.append({
+                    'Entity': _ENTITY_PRETTY.get(alias, alias),
+                    'Entity Alias': alias,
+                    'Normalized String': canonical,
+                    'Candidate String': cand,
+                    'Similarity': round(float(sim), 4),
+                    'Normalized Count': int(count_map.get(canonical, 0)),
+                    'Candidate Count': int(count_map.get(cand, 0)),
+                })
+
+    df = pd.DataFrame(rows, columns=['Entity', 'Entity Alias', 'Normalized String', 'Candidate String', 'Similarity', 'Normalized Count', 'Candidate Count'])
+    if not df.empty:
+        df = df.sort_values(['Entity Alias', 'Similarity', 'Normalized Count', 'Candidate Count'], ascending=[True, False, False, False]).reset_index(drop=True)
+
+    pbx.normalize_entities_table = df
+    pbx.ask_gpt_normalize_entities = df
+    _normalization_export(df, export_path, sep=sep)
+
+    if verbose:
+        print(f'[normalize_entities] candidates={len(df)} | entity={entity} | method={method} | threshold={threshold}')
+
+    if view is not None and not df.empty:
+        go, _ = _lazy_plotly()
+        counts_df = df.groupby('Entity', as_index=False).size().rename(columns={'size': 'Candidate Rows'})
+        fig = go.Figure(go.Bar(
+            x=counts_df['Entity'], y=counts_df['Candidate Rows'],
+            text=counts_df['Candidate Rows'], textposition='outside',
+            marker=dict(color=PALETTE['stars'], line=dict(color='rgba(15,23,42,0.18)', width=1)),
+        ))
+        layout = _base_layout('Entity Normalization Candidates', 'Rows suggested for manual review before applying normalization', height=520, width=880)
+        layout.update(xaxis=_clean_axis('Entity'), yaxis=_clean_axis('Candidate rows'), margin=dict(l=70, r=40, t=100, b=80))
+        fig.update_layout(**layout)
+        pbx.normalize_entities_figure = fig
+        _render_figure(fig, view)
+
+    return df
+
+
+def apply_entity_normalization(
+    pbx,
+    mapping_file: Optional[str] = None,
+    mapping_text: Optional[str] = None,
+    entity: str = 'aut',
+    sep: str = ';',
+    inplace: bool = True,
+    case_sensitive: bool = False,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Apply a reviewed no-header entity-normalization mapping and recompute PyBibX.
+
+    Accepted CSV formats
+    --------------------
+    Single-entity, two-column format::
+
+        "normalized string";"candidate string"
+
+    Mixed-entity, three-column format::
+
+        "entity";"normalized string";"candidate string"
+
+    The second value is replaced by the first. To reject a candidate, delete the
+    row from the mapping file before applying it.
+    """
+    if mapping_text is None and mapping_file is None:
+        raise ValueError('Provide mapping_text or mapping_file')
+    if mapping_text is None:
+        with open(mapping_file, 'r', encoding='utf-8-sig', newline='') as fh:
+            mapping_text = fh.read()
+    rows = _safe_mapping_rows_from_text(mapping_text, sep=sep)
+    mappings = _candidate_pairs_from_mapping_rows(rows, entity=entity)
+    if not mappings:
+        raise ValueError('No valid normalization rows were found. Expected: normalized_string;candidate_string')
+
+    data_before = getattr(pbx, 'data', None)
+    if data_before is None:
+        raise ValueError('No dataset is loaded')
+    data_after = data_before.copy(deep=True)
+    applied_rows = []
+    for alias, pairs in mappings.items():
+        if not pairs:
+            continue
+        data_after = _apply_pairs_to_dataframe(data_after, alias, pairs, case_sensitive=case_sensitive)
+        for candidate, normalized in pairs:
+            applied_rows.append({
+                'Entity Alias': alias,
+                'Entity': _ENTITY_PRETTY.get(alias, alias),
+                'Normalized String': normalized,
+                'Candidate String': candidate,
+            })
+
+    if inplace:
+        pbx.load_database_df(data_after)
+
+    report = pd.DataFrame(applied_rows, columns=['Entity', 'Entity Alias', 'Normalized String', 'Candidate String'])
+    pbx.entity_normalization_report = report
+    pbx.ask_gpt_entity_normalization = report
+    if verbose:
+        print(f'[apply_entity_normalization] applied_rows={len(report)} | inplace={inplace}')
+    return report
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1061,6 +1554,265 @@ def _collaboration_figure(df: pd.DataFrame, pretty: str):
     layout.update(xaxis=xa, yaxis=ya, margin=dict(l=80, r=120, t=100, b=70))
     fig.update_layout(**layout)
     return fig
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §4  Collaboration Brokerage (structural bridge roles in collaboration graphs)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _collaboration_brokerage_figure(df: pd.DataFrame, pretty: str):
+    go, _ = _lazy_plotly()
+    plot_df = df.copy()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=plot_df['Weighted Degree'],
+        y=plot_df['Betweenness Centrality'],
+        mode='markers+text',
+        text=[_format_label(v, 24) for v in plot_df['Entity']],
+        textposition='top center',
+        textfont=dict(family=FONT_FAMILY, size=9, color=PALETTE['text_soft']),
+        marker=dict(
+            size=np.clip(10 + 3.0 * np.sqrt(pd.to_numeric(plot_df['Documents'], errors='coerce').fillna(0)), 10, 42),
+            color=plot_df['Brokerage Score'],
+            colorscale=_TIME_SCALE,
+            showscale=True,
+            colorbar=dict(
+                title=dict(text='<b>Brokerage</b>', font=dict(family=FONT_FAMILY, size=11, color=PALETTE['text_strong'])),
+                thickness=14,
+                len=0.74,
+                outlinewidth=0,
+                tickfont=dict(family=FONT_FAMILY, size=10, color=PALETTE['text_soft']),
+            ),
+            line=dict(color='white', width=1.0),
+            opacity=0.90,
+        ),
+        customdata=np.stack([
+            plot_df['Documents'],
+            plot_df['Citations'],
+            plot_df['Degree'],
+            plot_df['Constraint'],
+            plot_df['Community'],
+            plot_df['Mean Citations'],
+        ], axis=-1),
+        hovertemplate=(
+            '<b>%{text}</b><br>'
+            '<span style="color:#cbd5e1">────────────────</span><br>'
+            'Weighted degree: <b>%{x:.2f}</b><br>'
+            'Betweenness: <b>%{y:.4f}</b><br>'
+            'Documents: %{customdata[0]} · Citations: %{customdata[1]}<br>'
+            'Mean citations: %{customdata[5]:.2f}<br>'
+            'Degree: %{customdata[2]} · Constraint: %{customdata[3]:.3f}<br>'
+            'Community: %{customdata[4]}<extra></extra>'
+        ),
+        name='Entities',
+    ))
+
+    layout = _base_layout(
+        title=f'Collaboration Brokerage — {pretty}',
+        subtitle='Brokerage highlights entities connecting otherwise separated collaboration neighborhoods',
+        height=660,
+        width=1060,
+    )
+    layout.update(
+        xaxis=_clean_axis('Weighted collaboration degree'),
+        yaxis=_clean_axis('Betweenness centrality'),
+        margin=dict(l=80, r=120, t=100, b=80),
+    )
+    fig.update_layout(**layout)
+    return fig
+
+
+def collaboration_brokerage(
+    pbx,
+    entity: str = 'aut',
+    topn: Optional[int] = 40,
+    min_documents: int = 1,
+    drop_unknown: bool = True,
+    view: Optional[str] = 'browser',
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Quantify collaboration brokerage for authors, institutions, or countries.
+
+    The function builds a co-occurrence collaboration graph from the selected
+    entity type and reports centrality, structural-hole constraint, detected
+    community, and a normalized brokerage score.
+
+    Parameters
+    ----------
+    pbx : pybibx pbx instance
+        Active PyBibX object.
+    entity : {'aut', 'inst', 'cout'} or aliases, default='aut'
+        Collaboration level: authors, institutions, or countries.
+    topn : int or None, default=40
+        Number of top-ranked entities to return. Use None for all entities.
+    min_documents : int, default=1
+        Minimum number of documents required for an entity to be included.
+    drop_unknown : bool, default=True
+        Remove unknown or empty entity labels.
+    view : {'browser', 'notebook', None}, default='browser'
+        Render a Plotly figure when not None.
+    verbose : bool, default=True
+        Print a compact execution summary.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Brokerage table with productivity, citation, centrality, constraint,
+        community, and composite brokerage indicators.
+    """
+    alias = _resolve_entity_alias(entity, default='aut')
+    if alias not in {'aut', 'inst', 'cout'}:
+        raise ValueError("collaboration_brokerage entity must be one of: 'aut', 'inst', 'cout' or their aliases")
+
+    per_paper, _, _, _ = _get_entity_data(pbx, alias)
+    citations = list(getattr(pbx, 'citation', []) or [])
+
+    docs: Dict[str, int] = defaultdict(int)
+    cits: Dict[str, float] = defaultdict(float)
+    edge_weights: Dict[Tuple[str, str], float] = defaultdict(float)
+
+    for i, items in enumerate(per_paper):
+        clean_items = _clean_entity_items(items, drop_unknown=drop_unknown)
+        if len(clean_items) == 0:
+            continue
+        try:
+            paper_cit = float(citations[i]) if i < len(citations) and citations[i] is not None else 0.0
+        except Exception:
+            paper_cit = 0.0
+        for item in clean_items:
+            docs[item] += 1
+            cits[item] += paper_cit
+        if len(clean_items) >= 2:
+            for pos, a in enumerate(clean_items):
+                for b in clean_items[pos + 1:]:
+                    if a != b:
+                        edge_weights[_pair_key(a, b)] += 1.0
+
+    keep = {k for k, v in docs.items() if v >= int(min_documents)}
+    empty_cols = [
+        'Entity', 'Documents', 'Citations', 'Mean Citations', 'Degree',
+        'Weighted Degree', 'Degree Centrality', 'Betweenness Centrality',
+        'Closeness Centrality', 'Eigenvector Centrality', 'Constraint',
+        'Brokerage Score', 'Community'
+    ]
+
+    if len(keep) == 0:
+        df = pd.DataFrame(columns=empty_cols)
+        pbx.collaboration_brokerage_table = df
+        pbx.ask_gpt_collaboration_brokerage = df
+        if verbose:
+            print('[collaboration_brokerage] no entities passed the filters')
+        return df
+
+    degree: Dict[str, int] = {n: 0 for n in keep}
+    weighted_degree: Dict[str, float] = {n: 0.0 for n in keep}
+    degree_cent: Dict[str, float] = {n: 0.0 for n in keep}
+    bet_cent: Dict[str, float] = {n: 0.0 for n in keep}
+    close_cent: Dict[str, float] = {n: 0.0 for n in keep}
+    eig_cent: Dict[str, float] = {n: 0.0 for n in keep}
+    constraint: Dict[str, float] = {n: np.nan for n in keep}
+    community: Dict[str, int] = {n: 0 for n in keep}
+
+    try:
+        import networkx as nx
+        G = nx.Graph()
+        for node in keep:
+            G.add_node(node)
+        for (a, b), w in edge_weights.items():
+            if a in keep and b in keep:
+                G.add_edge(a, b, weight=float(w))
+
+        degree = dict(G.degree())
+        weighted_degree = dict(G.degree(weight='weight'))
+        if G.number_of_nodes() > 1:
+            degree_cent = {k: float(v) for k, v in nx.degree_centrality(G).items()}
+        if G.number_of_edges() > 0:
+            # Unweighted betweenness is intentionally used here: larger edge
+            # weight means stronger collaboration, not longer graph distance.
+            bet_cent = {k: float(v) for k, v in nx.betweenness_centrality(G, normalized=True).items()}
+            close_cent = {k: float(v) for k, v in nx.closeness_centrality(G).items()}
+            try:
+                eig_cent = {k: float(v) for k, v in nx.eigenvector_centrality_numpy(G, weight='weight').items()}
+            except Exception:
+                eig_cent = {n: 0.0 for n in G.nodes()}
+            try:
+                constraint = {k: float(v) for k, v in nx.constraint(G, weight='weight').items()}
+            except Exception:
+                constraint = {n: np.nan for n in G.nodes()}
+            try:
+                communities = list(nx.algorithms.community.greedy_modularity_communities(G, weight='weight'))
+                for cid, nodes in enumerate(communities, start=1):
+                    for n in nodes:
+                        community[n] = cid
+            except Exception:
+                pass
+    except ImportError:
+        # Dependency-safe fallback: degree and weighted degree are still useful
+        # brokerage proxies when NetworkX is not available.
+        adjacency: Dict[str, Dict[str, float]] = defaultdict(dict)
+        for (a, b), w in edge_weights.items():
+            if a in keep and b in keep:
+                adjacency[a][b] = adjacency[a].get(b, 0.0) + float(w)
+                adjacency[b][a] = adjacency[b].get(a, 0.0) + float(w)
+        denom = max(len(keep) - 1, 1)
+        for n in keep:
+            degree[n] = len(adjacency.get(n, {}))
+            weighted_degree[n] = float(sum(adjacency.get(n, {}).values()))
+            degree_cent[n] = float(degree[n] / denom)
+
+    raw = pd.DataFrame({
+        'Entity': list(keep),
+        'Documents': [int(docs[n]) for n in keep],
+        'Citations': [int(cits[n]) for n in keep],
+        'Mean Citations': [_safe_div(float(cits[n]), float(docs[n]), 0.0) for n in keep],
+        'Degree': [int(degree.get(n, 0)) for n in keep],
+        'Weighted Degree': [float(weighted_degree.get(n, 0.0)) for n in keep],
+        'Degree Centrality': [float(degree_cent.get(n, 0.0)) for n in keep],
+        'Betweenness Centrality': [float(bet_cent.get(n, 0.0)) for n in keep],
+        'Closeness Centrality': [float(close_cent.get(n, 0.0)) for n in keep],
+        'Eigenvector Centrality': [float(eig_cent.get(n, 0.0)) for n in keep],
+        'Constraint': [float(constraint.get(n, np.nan)) if pd.notna(constraint.get(n, np.nan)) else np.nan for n in keep],
+        'Community': [int(community.get(n, 0)) for n in keep],
+    })
+
+    if raw['Constraint'].notna().any():
+        inv_constraint = 1.0 - _minmax(raw['Constraint'].fillna(raw['Constraint'].max()))
+    else:
+        inv_constraint = pd.Series([0.5] * len(raw), index=raw.index, dtype=float)
+
+    raw['Brokerage Score'] = (
+        0.45 * _minmax(raw['Betweenness Centrality']) +
+        0.25 * _minmax(raw['Weighted Degree']) +
+        0.20 * inv_constraint +
+        0.10 * _minmax(raw['Documents'])
+    ).astype(float)
+
+    df = raw.sort_values(
+        ['Brokerage Score', 'Betweenness Centrality', 'Weighted Degree', 'Documents'],
+        ascending=False,
+    ).reset_index(drop=True)
+
+    if topn is not None:
+        try:
+            df = df.head(int(topn)).reset_index(drop=True)
+        except Exception:
+            pass
+
+    pbx.collaboration_brokerage_table = df
+    pbx.ask_gpt_collaboration_brokerage = df
+
+    if verbose:
+        print(f'[collaboration_brokerage] entity={alias} | returned={len(df)} | min_documents={min_documents}')
+
+    if view is not None and not df.empty:
+        fig = _collaboration_brokerage_figure(df, _ENTITY_PRETTY.get(alias, alias))
+        pbx.collaboration_brokerage_figure = fig
+        _render_figure(fig, view)
+
+    return df
 
 
 # ══════════════════════════════════════════════════════════════════════════════

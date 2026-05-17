@@ -7780,6 +7780,16 @@ class pbx_probe():
         from .advanced import disruption_index as _fn
         return _fn(self, paper_ids = paper_ids, strict_future = strict_future, min_future_citers = min_future_citers)
 
+    # Function: Normalize Entities -- detect candidate entity normalization mappings
+    def normalize_entities(self, entity = 'all', method = 'fuzzy', threshold = 0.88, min_count = 1, max_items = 500, sep = ';', export_path = None, view = None, verbose = True):
+        from .advanced import normalize_entities as _fn
+        return _fn(self, entity = entity, method = method, threshold = threshold, min_count = min_count, max_items = max_items, sep = sep, export_path = export_path, view = view, verbose = verbose)
+
+    # Function: Apply Entity Normalization -- apply a reviewed no-header mapping CSV
+    def apply_entity_normalization(self, mapping_file = None, mapping_text = None, entity = 'aut', sep = ';', inplace = True, case_sensitive = False, verbose = True):
+        from .advanced import apply_entity_normalization as _fn
+        return _fn(self, mapping_file = mapping_file, mapping_text = mapping_text, entity = entity, sep = sep, inplace = inplace, case_sensitive = case_sensitive, verbose = verbose)
+
 ############################################################################
 
     # Function: Temporal Scholarly Graph
@@ -7804,6 +7814,12 @@ class pbx_probe():
     # Function: Collaboration Impact -- solo vs collab impact and centralities
     def collaboration_impact(self, entity = 'cout', topn = 25, min_documents = 1, drop_unknown = True, view = 'browser', verbose = True):
         from .advanced import collaboration_impact as _fn
+        return _fn(self, entity = entity, topn = topn, min_documents = min_documents, drop_unknown = drop_unknown, view = view, verbose = verbose)
+
+
+    # Function: Collaboration Brokerage -- structural bridge roles in co-authorship/collaboration networks
+    def collaboration_brokerage(self, entity = 'aut', topn = 40, min_documents = 1, drop_unknown = True, view = 'browser', verbose = True):
+        from .advanced import collaboration_brokerage as _fn
         return _fn(self, entity = entity, topn = topn, min_documents = min_documents, drop_unknown = drop_unknown, view = view, verbose = verbose)
 
     # Function: Burst Detection -- Kleinberg two-state discrete model

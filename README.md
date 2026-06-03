@@ -40,7 +40,7 @@ b) **WoS**: Search, select articles, click **Export**, choose **Save to Other Fi
 
 c) **PubMed**: Search, select articles, click **Save**, choose **PubMed** format, and click **Save** to download a `.txt` file. The exported files do **not** contain the **References** for the articles.
 
-d) **OpenAlex**: **API Option** -> Retrieve records through the **OpenAlex REST API** and save the response as a `.json` file. OpenAlex’s official programmatic interface is its API, designed for structured, machine-readable access ([OpenAlex Developers](https://developers.openalex.org/api-reference/introduction)). **Website Option** -> Search and filter records in the OpenAlex website, click **Export**, and choose **CSV (standard)**. In particular, from the **Website option**, the exported files do **not** contain the **References** for the articles.
+d) **OpenAlex**: **API Option** -> Retrieve records through the **OpenAlex REST API** and save the response as a `.json` file. OpenAlex's official programmatic interface is its API, designed for structured, machine-readable access ([OpenAlex Developers](https://developers.openalex.org/api-reference/introduction)). **Website Option** -> Search and filter records in the OpenAlex website, click **Export**, and choose **CSV (standard)**. In particular, from the **Website option**, the exported files do **not** contain the **References** for the articles.
 
 
 ### General Capabilities:
@@ -53,7 +53,7 @@ d) **OpenAlex**: **API Option** -> Retrieve records through the **OpenAlex REST 
 - f) Generates an **EDA (Exploratory Data Analysis)** Report: Publications Timespan, Total Number of Countries, Total Number of Institutions, Total Number of Sources, Total Number of References, Total Number of Languages (and also the number of docs for each language), Total Number of Documents, Average Documents per Author, Average Documents per Institution, Average Documents per Source, Average Documents per Year, Total Number of Authors, Total Number of Authors Keywords, Total Number of Authors Keywords Plus, Total Single-Authored Documents, Total Multi-Authored Documents, Average Collaboration Index, Max H-Index, Total Number of Citations, Average Citations per Author, Average Citations per Institution, Average Citations per Document, Average Citations per Source
 - g) Creates an **ID (Identification)** for each Document, Authors, Sources, Institutions, Countries, Authors' Keywords, Keywords Plus and References. The IDs can be used in graphs/plots to obtain a cleaner visualization
 - h) Generates **Profiling Functions** that are a detailed summary (profile) for any selected entity: Authors, Sources, Institutions, Countries, Authors' Keywords, Keywords Plus and References. For each entity, the function aggregates key statistics and metadata, including the list of associated publications, total and average citations, time span of activity, and more. 
-- i) Creates an **Authors's Metrics Table** with H-Index, E-Index, G-Index, M-Index and J-Index
+- i) Creates an **Authors' Metrics Table** with H-Index, E-Index, G-Index, M-Index and J-Index
 - j) Creates a **WordCloud** from the Abstracts, Titles, Authors Keywords or Keywords Plus
 - k) Creates a **N-Gram Bar Plot (interactive plot)** from the Abstracts, Titles, Authors Keywords or Keywords Plus
 - l) Creates a **Projection (interactive plot)** of the documents based on the Abstracts, Titles, Authors Keywords or Keywords Plus

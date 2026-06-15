@@ -59,8 +59,8 @@ d) **OpenAlex**: **API Option** -> Retrieve records through the **OpenAlex REST 
 - l) Creates a **Projection (interactive plot)** of the documents based on the Abstracts, Titles, Authors Keywords or Keywords Plus
 - m) Creates a **Term Growth Plot  (interactive plot)** showing the temporal evolution of terms from Abstracts, Titles, Sources, Author Keywords, or Keywords Plus.
 - n) Creates a **Sankey Diagram (interactive plot)** with any combination of the following keys: Authors, Countries, Institutions, Journals, Auhors_Keywords, Keywords_Plus, and/or Languages
-- o) Creates a **XY Bar Chart (interactive plot)** that displays the count of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Country
-- p) Creates a **XY Heatmap (interactive plot)** that displays the count and papers' ID of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors_Keywords, Keywords_Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Authors_Keywords and the papers associated to them.
+- o) Creates a **XY Bar Chart (interactive plot)** that displays the count of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors Keywords, Keywords Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Country
+- p) Creates a **XY Heatmap (interactive plot)** that displays the count and papers' ID of a specified Y-key for each category defined by a specified X-key. The plot visualizes the distribution of entities such as Authors, Countries, Institutions, Journals, Authors Keywords, Keywords Plus, and/or Languages. For example, it can show how many Authors publications are associated with each Authors_Keywords and the papers associated to them.
 - q) Creates a **TreeMap (interactive plot)** from the Authors, Countries, Institutions, Journals, Auhors_Keywords, or Keywords_Plus
 - r) Creates an **Authors Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each author
 - s) Creates a **Countries Productivity Plot (interactive plot)** It informs for each year the documents (IDs) published for each country (each author's country)
@@ -76,23 +76,23 @@ d) **OpenAlex**: **API Option** -> Retrieve records through the **OpenAlex REST 
 
 - a) Creates a **Top Reference Set Matrix**, which, for a given group size n, identifies and returns the most frequently co-cited Reference groups of size n
 - b) Creates a **Reference Co-Citation Network (interactive plot)** that visually displays the top n References that are most frequently cited together with a target Reference
-- c) **Collaboration Plot** between Authors, Countries, Institutions, Authors' Keywords or Keywords Plus
+- c) **Collaboration Plot** between Authors, Countries, Institutions, Authors Keywords or Keywords Plus
 - d) Computes **Hubs & Authorities** scores for papers in a citation network, and can also find the top-ranked nodes per decade.
 - e) Identifies **Sleeping Beauties** papers that were uncited for a long time but later received sudden attention.
 - f) Identifies the **Princes** of the **Sleeping Beauties**.
 - g) **Citation Analysis (interactive plot)** between Documents (Blue Nodes) and Citations (Red Nodes). Documents and Citations can be highlighted for better visualization
-- h) **Collaboration Analysis (interactive plot)** between Authors, Countries, Institutions or **Adjacency Analysis (interactive plot)** between Authors' Keywords or Keywords Plus. Collaboration and Adjacency can be highlighted for better visualization
+- h) **Collaboration Analysis (interactive plot)** between Authors, Countries, Institutions or **Adjacency Analysis (interactive plot)** between Authors Keywords or Keywords Plus. Collaboration and Adjacency can be highlighted for better visualization
 - i) **Similarity Analysis (interactive plot)** can be performed using coupling or cocitation methods
 - j) **World Map Collaboration Analysis (interactive plot)** between Countries in a Map
 - k) **Main Path Analysis** identifies the main citation backbone of the field using search path methods such as SPC, SPLC, or SPNP
-- l) Creates a **Temporal Scholarly Graph Explorer (interactive HTML plot)** to explore the bibliometric dataset as a heterogeneous temporal graph. It supports **timeline**, **force**, and **ego** views; allows centering the analysis on Papers, References, Authors, Journals, Institutions, Countries, Authors' Keywords, or Keywords Plus; and can export a standalone **HTML** file for interactive exploration.
+- l) Creates a **Temporal Scholarly Graph Explorer (interactive HTML plot)** to explore the bibliometric dataset as a heterogeneous temporal graph. It supports **timeline**, **force**, and **ego** views; allows centering the analysis on Papers, References, Authors, Journals, Institutions, Countries, Authors Keywords, or Keywords Plus; and can export a standalone **HTML** file for interactive exploration.
 
 ### Scientometric Capabilities:
 
 - a) Performs **Portfolio Analysis** to classify entities, such as Authors, Journals, Institutions, Countries, Authors' Keywords or Keywords Plus, according to productivity and impact indicators.
 - b) Performs **Specialization Analysis** to measure how concentrated or diversified the scientific production is across entities, themes, or conceptual fields.
 - c) Computes **Collaboration Impact** indicators to evaluate how collaborative patterns relate to scientific visibility, citation performance, and productivity.
-- d) Performs **Burst Detection** to identify Papers, Authors, Journals, Authors' Keywords, Keywords Plus or other entities with sudden increases in scientific attention over time.
+- d) Performs **Burst Detection** to identify Papers, Authors, Journals, Authors Keywords, Keywords Plus or other entities with sudden increases in scientific attention over time.
 - e) Performs **Knowledge Diffusion Analysis** to trace how concepts move between entities, using heatmaps, chord diagrams, Sankey diagrams, or automatic visualization selection.
 - f) Computes **Reference Diversity** indicators for Papers, such as breadth, depth, temporal diversity, and concentration of cited References.
 - g) Computes the **Disruption Index** to identify whether papers are more disruptive or more developmental within the citation network.

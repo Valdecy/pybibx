@@ -42,6 +42,7 @@ c) **PubMed**: Search, select articles, click **Save**, choose **PubMed** format
 
 d) **OpenAlex**: **API Option** -> Retrieve records through the **OpenAlex REST API** and save the response as a `.json` file. OpenAlex's official programmatic interface is its API, designed for structured, machine-readable access ([OpenAlex Developers](https://developers.openalex.org/api-reference/introduction)). **Website Option** -> Search and filter records in the OpenAlex website, click **Export**, and choose **CSV (standard)**. In particular, from the **Website option**, the exported files do **not** contain the **References** for the articles.
 
+e) **Compare**: Users can compare records exported from **Scopus**, **WoS**, **PubMed**, and **OpenAlex** using `pybibx.compare_sources()`. This function identifies shared and unique documents across databases, evaluates source overlap, reports metadata completeness, indicates which documents were matched, and estimates the contribution of each database to the final corpus.
 
 ### General Capabilities:
 
@@ -145,10 +146,11 @@ pip install pybibx
 - Example 05: Scopus + WOS             ([ Colab Demo ](https://colab.research.google.com/drive/1DqEk0_IakJPfIZDVcnTWBE_nxyhW9p-W?usp=sharing))
 - Example 06: WOS + Scopus             ([ Colab Demo ](https://colab.research.google.com/drive/12k_IOcSDwumbEtPqqSMbCIE6ZypgKAJn?usp=sharing))
 - Example 07: Scopus + WOS + Pubmed    ([ Colab Demo ](https://colab.research.google.com/drive/1Ko6AibkXtB_Kwg3Eu0fhzNMVEIXPkbez?usp=sharing))
-- Example 08: Temporal Scholarly Graph ([ Colab Demo ](https://colab.research.google.com/drive/11TlUCTBJS0yYzsO4ppbWK0oJpDW69rkJ?usp=sharing))
-- Example 09: Your Own                 ([ Colab Demo ](https://colab.research.google.com/drive/19EYjgal9V1kemmzpHnyp6MSlk9S-kGHT?usp=sharing))
-- Example 10: **Ask chatGPT** Analysis ([ Colab Demo ](https://colab.research.google.com/drive/1LMrR49F54MuX-stlrQbrrjX_dEU3kZ8Y?usp=sharing))
-- Example 11: **Ask Gemini** Analysis  ([ Colab Demo ](https://colab.research.google.com/drive/1oEJBfCml_OMgmSTicMOB-FKMaR2FtoG3?usp=sharing))
+- Example 08: Compare Databases        ([ Colab Demo ](https://colab.research.google.com/drive/1bNKZXY3yF3xEqsaUHqa49Q-NUbO3YSgo?usp=sharing))
+- Example 09: Temporal Scholarly Graph ([ Colab Demo ](https://colab.research.google.com/drive/11TlUCTBJS0yYzsO4ppbWK0oJpDW69rkJ?usp=sharing))
+- Example 10: Your Own                 ([ Colab Demo ](https://colab.research.google.com/drive/19EYjgal9V1kemmzpHnyp6MSlk9S-kGHT?usp=sharing))
+- Example 11: **Ask chatGPT** Analysis ([ Colab Demo ](https://colab.research.google.com/drive/1LMrR49F54MuX-stlrQbrrjX_dEU3kZ8Y?usp=sharing))
+- Example 12: **Ask Gemini** Analysis  ([ Colab Demo ](https://colab.research.google.com/drive/1oEJBfCml_OMgmSTicMOB-FKMaR2FtoG3?usp=sharing))
 
 ## Acknowledgement 
 This section indicates the libraries that inspired pybibx

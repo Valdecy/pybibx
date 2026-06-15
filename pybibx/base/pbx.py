@@ -8201,6 +8201,8 @@ class pbx_probe():
     # Function: W2V
     def word_embeddings(self, stop_words = ['en'], lowercase = True, rmv_accents = True, rmv_special_chars = False, rmv_numbers = True, rmv_custom_words = [], vector_size = 100, window = 5, min_count = 1, epochs = 10):
         FastText = _get_fasttext()
+        if FastText is None:
+            raise ImportError("word_embeddings() requires gensim. Install it with: pip install gensim")
         #----------------------------------------------------------------------
         
         def tokenize(text):
@@ -8224,12 +8226,15 @@ class pbx_probe():
                           min_count   = min_count, 
                           epochs      = epochs)
         
-        w_emb  = [model.wv[word] for word in corpus[0] if word in model.wv]
+        #w_emb  = [model.wv[word] for word in corpus[0] if word in model.wv]
+        w_emb  = [model.wv[word] for word in vocab]
+        w_dict = {word: model.wv[word] for word in vocab}
         vocab  = model.wv.index_to_key
         #------------------------------------------------------------------
         self.model_wv = model
         self.model_cp = corpus
         self.model_vc = vocab
+        self.model_wd = w_dict
         print("W2V Embeddings Ready")
         return w_emb
     

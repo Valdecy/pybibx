@@ -1,4 +1,5 @@
 from .base.pbx import pbx_probe
+from .base.source_compare import compare_sources, SourceComparisonResult
 
 bibliometrix = pbx_probe
 
@@ -6,6 +7,8 @@ __all__ = [
     "pbx_probe",
     "web_app",
     "web_stop",
+    "compare_sources",
+    "SourceComparisonResult",
 ]
 
 

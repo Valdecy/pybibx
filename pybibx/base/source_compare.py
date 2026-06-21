@@ -14,6 +14,8 @@ therefore remains fast for exploratory source-audit work.
 from __future__ import annotations
 
 import csv
+import datetime as _dt
+import html as _html
 import json
 import math
 import os
@@ -36,6 +38,272 @@ _DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
 _YEAR_RE = re.compile(r"(?<!\d)(18\d{2}|19\d{2}|20\d{2}|21\d{2})(?!\d)")
 _NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 _SPACES_RE = re.compile(r"\s+")
+__REPORT_ASSETS_MARKER__ = True
+
+
+# ---------------------------------------------------------------------------
+# Styled HTML report assets (PyBibX web-app visual language)
+
+_REPORT_CSS = r"""
+:root{
+  --bg:#0b0d12;--bg2:#11141c;--bg3:#171b27;--sur:#1c2030;--sur2:#232840;
+  --bdr:rgba(255,255,255,.07);--bdr2:rgba(255,255,255,.14);
+  --am:#f5a623;--am2:#ffd080;--am-d:rgba(245,166,35,.12);
+  --cy:#3de3c8;--cy2:#7af0dc;--cy-d:rgba(61,227,200,.1);
+  --vi:#a78bfa;--vi-d:rgba(167,139,250,.12);
+  --red:#f87171;--red-d:rgba(248,113,113,.12);
+  --green:#34d399;--green-d:rgba(52,211,153,.12);
+  --tx:#e8eaf2;--tx2:#9aa0b8;--tx3:#4c5270;
+  --mono:'IBM Plex Mono',monospace;--sans:'Syne',sans-serif;--body:'Inter',sans-serif;
+  --r:14px;--sw:230px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{
+  background:radial-gradient(1200px 600px at 80% -10%,rgba(245,166,35,.06),transparent 60%),
+             radial-gradient(900px 500px at -10% 10%,rgba(61,227,200,.05),transparent 55%),
+             var(--bg);
+  color:var(--tx);font-family:var(--body);font-size:14px;line-height:1.55;
+  display:flex;min-height:100vh;-webkit-font-smoothing:antialiased;
+}
+::selection{background:rgba(245,166,35,.28);}
+code{font-family:var(--mono);font-size:.86em;background:var(--bg3);border:1px solid var(--bdr);
+  padding:1px 6px;border-radius:5px;color:var(--am2);}
+a{color:inherit;text-decoration:none;}
+
+/* SIDEBAR */
+.sidebar{
+  position:sticky;top:0;align-self:flex-start;width:var(--sw);min-width:var(--sw);height:100vh;
+  background:var(--bg2);border-right:1px solid var(--bdr);display:flex;flex-direction:column;
+  overflow-y:auto;padding:22px 0;
+}
+.sidebar::-webkit-scrollbar{width:3px;}
+.sidebar::-webkit-scrollbar-thumb{background:var(--bdr2);}
+.brand{padding:0 22px 18px;border-bottom:1px solid var(--bdr);margin-bottom:14px;}
+.brand-mark{font-family:'DM Serif Display',serif;font-size:30px;line-height:1;
+  background:linear-gradient(135deg,var(--am),var(--cy));-webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;background-clip:text;}
+.brand-mark span{font-style:italic;}
+.brand-sub{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--tx3);margin-top:6px;}
+.toc{display:flex;flex-direction:column;gap:1px;padding:0 10px;flex:1;}
+.toc-link{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;
+  color:var(--tx2);font-size:13px;border-left:2px solid transparent;transition:all .15s;}
+.toc-link:hover{background:var(--am-d);color:var(--am2);}
+.toc-link.active{background:var(--am-d);color:var(--am);border-left-color:var(--am);font-weight:600;}
+.toc-ico{font-size:13px;width:16px;text-align:center;color:var(--tx3);}
+.toc-link.active .toc-ico,.toc-link:hover .toc-ico{color:inherit;}
+.sidebar-foot{padding:16px 22px 0;font-family:var(--mono);font-size:10px;color:var(--tx3);
+  letter-spacing:.06em;}
+
+/* MAIN */
+.main{flex:1;min-width:0;max-width:1180px;margin:0 auto;padding:36px 44px 80px;width:100%;}
+.hero{margin-bottom:28px;}
+.hero-eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--am);margin-bottom:12px;}
+.hero h1{font-family:'DM Serif Display',serif;font-size:46px;line-height:1.05;font-weight:400;
+  letter-spacing:-.01em;margin-bottom:12px;}
+.hero-lead{color:var(--tx2);font-size:15px;max-width:680px;font-weight:300;}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px;}
+.chip{display:inline-flex;align-items:stretch;border-radius:8px;overflow:hidden;
+  border:1px solid var(--bdr);font-size:11.5px;font-family:var(--mono);}
+.chip-k{padding:4px 9px;color:var(--tx2);background:var(--bg3);}
+.chip-v{padding:4px 10px;color:var(--tx);background:var(--sur);font-weight:500;}
+.chip-am .chip-v{color:var(--am2);} .chip-cy .chip-v{color:var(--cy2);} .chip-vi .chip-v{color:var(--vi);}
+
+/* KPI */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(186px,1fr));gap:14px;margin-bottom:26px;}
+.kpi{position:relative;background:linear-gradient(180deg,var(--sur),var(--bg2));
+  border:1px solid var(--bdr);border-radius:var(--r);padding:18px 18px 16px;overflow:hidden;}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--am);}
+.kpi-cy::before{background:var(--cy);} .kpi-vi::before{background:var(--vi);}
+.kpi-green::before{background:var(--green);} .kpi-red::before{background:var(--red);}
+.kpi-val{font-family:var(--sans);font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1;}
+.kpi-am .kpi-val{color:var(--am2);} .kpi-cy .kpi-val{color:var(--cy2);}
+.kpi-vi .kpi-val{color:var(--vi);} .kpi-green .kpi-val{color:var(--green);} .kpi-red .kpi-val{color:var(--red);}
+.kpi-lbl{margin-top:9px;font-size:12.5px;color:var(--tx);font-weight:500;}
+.kpi-sub{margin-top:3px;font-family:var(--mono);font-size:10.5px;color:var(--tx3);}
+
+/* CARD / SECTION */
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:var(--r);
+  margin-bottom:20px;overflow:hidden;scroll-margin-top:18px;}
+.card-head{display:flex;align-items:center;gap:11px;padding:15px 22px;
+  background:linear-gradient(180deg,var(--sur),var(--bg2));border-bottom:1px solid var(--bdr);}
+.card-ico{font-size:15px;color:var(--am);width:20px;text-align:center;}
+.card-head h2{font-family:var(--sans);font-size:16px;font-weight:700;letter-spacing:.01em;}
+.card-body{padding:18px 22px 22px;}
+.hint{color:var(--tx2);font-size:12.5px;margin-bottom:14px;font-style:italic;}
+.muted{color:var(--tx3);font-family:var(--mono);font-size:12px;}
+
+/* BANNER */
+.banner{display:flex;gap:13px;align-items:flex-start;border-radius:var(--r);padding:14px 18px;
+  margin-bottom:22px;border:1px solid var(--bdr2);}
+.banner-warn{background:var(--am-d);border-color:rgba(245,166,35,.35);}
+.banner-ico{font-size:18px;color:var(--am);}
+.banner ul{margin:6px 0 0 16px;color:var(--tx2);font-size:12.5px;}
+.banner strong{color:var(--am2);}
+
+/* COVERAGE STACK BAR */
+.stackbar{display:flex;height:30px;border-radius:8px;overflow:hidden;border:1px solid var(--bdr);}
+.seg{height:100%;}
+.seg-exclusive{background:linear-gradient(90deg,#2bb38a,var(--green));}
+.seg-shared{background:linear-gradient(90deg,var(--am),#e8890a);}
+.stackbar-legend{display:flex;gap:24px;margin-top:12px;font-size:12px;color:var(--tx2);
+  font-family:var(--mono);flex-wrap:wrap;}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:middle;}
+.dot-exclusive{background:var(--green);} .dot-shared{background:var(--am);}
+
+/* SOURCE CARDS */
+.src-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin-bottom:20px;}
+.src-card{background:var(--bg3);border:1px solid var(--bdr);border-radius:12px;padding:16px;}
+.src-card-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;}
+.src-name{font-family:var(--sans);font-weight:800;font-size:15px;color:var(--am2);letter-spacing:.03em;}
+.src-share{font-family:var(--mono);font-size:10.5px;color:var(--tx3);}
+.src-stats{display:flex;gap:6px;margin-bottom:14px;}
+.src-stats>div{flex:1;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;
+  padding:8px 6px;text-align:center;}
+.src-stats b{display:block;font-family:var(--sans);font-size:17px;font-weight:700;color:var(--tx);}
+.src-stats small{font-family:var(--mono);font-size:9px;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;}
+.cov-block{display:flex;flex-direction:column;gap:5px;}
+.cov-row{display:flex;align-items:center;gap:8px;}
+.cov-lbl{font-family:var(--mono);font-size:10px;color:var(--tx2);width:54px;flex-shrink:0;}
+.cov-track{flex:1;height:6px;background:var(--bg);border-radius:99px;overflow:hidden;}
+.cov-fill{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--cy),var(--am));}
+.cov-num{font-family:var(--mono);font-size:10px;color:var(--tx2);width:34px;text-align:right;flex-shrink:0;}
+
+/* MATRIX */
+.matrix-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;}
+.matrix-wrap{background:var(--bg3);border:1px solid var(--bdr);border-radius:12px;padding:14px;}
+.matrix-title{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--tx2);margin-bottom:11px;}
+table.matrix{border-collapse:separate;border-spacing:3px;width:100%;font-family:var(--mono);font-size:11.5px;}
+table.matrix th{color:var(--tx3);font-weight:500;font-size:10px;letter-spacing:.04em;padding:3px;text-transform:uppercase;}
+table.matrix th.rowhead{text-align:right;padding-right:8px;}
+.hcell{text-align:center;color:var(--tx);border-radius:6px;padding:9px 6px;font-weight:500;
+  text-shadow:0 1px 2px rgba(0,0,0,.5);min-width:42px;}
+.hcell.diag{outline:1px solid var(--bdr2);font-weight:700;}
+
+/* SCORE BARS */
+.score-block{display:flex;flex-direction:column;gap:11px;margin-bottom:20px;}
+.score-row{display:flex;align-items:center;gap:12px;}
+.score-name{font-family:var(--sans);font-weight:700;font-size:13px;color:var(--am2);width:120px;flex-shrink:0;
+  text-transform:uppercase;letter-spacing:.03em;}
+.score-track{flex:1;height:11px;background:var(--bg);border:1px solid var(--bdr);border-radius:99px;overflow:hidden;}
+.score-fill{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--am),var(--am2));}
+.score-num{font-family:var(--mono);font-size:12px;color:var(--tx);width:42px;text-align:right;flex-shrink:0;}
+
+/* TABLES */
+.tbl-tools{display:flex;align-items:center;gap:12px;margin-bottom:11px;flex-wrap:wrap;}
+.tbl-search{background:var(--bg3);border:1px solid var(--bdr2);border-radius:8px;color:var(--tx);
+  font-family:var(--body);font-size:12.5px;padding:7px 12px;outline:none;min-width:220px;transition:border .15s;}
+.tbl-search:focus{border-color:var(--am);}
+.tbl-meta{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--tx3);}
+.tbl-scroll{overflow-x:auto;border:1px solid var(--bdr);border-radius:10px;}
+.tbl-scroll::-webkit-scrollbar{height:8px;}
+.tbl-scroll::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:99px;}
+table.tbl{border-collapse:collapse;width:100%;font-size:12.5px;}
+table.tbl thead th{position:sticky;top:0;background:var(--sur2);color:var(--am2);text-align:left;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;
+  padding:9px 12px;border-bottom:1px solid var(--bdr2);white-space:nowrap;cursor:pointer;user-select:none;}
+table.tbl thead th:hover{color:var(--am);}
+table.tbl thead th::after{content:"⇅";opacity:.25;margin-left:6px;font-size:10px;}
+table.tbl thead th.sort-asc::after{content:"↑";opacity:1;}
+table.tbl thead th.sort-desc::after{content:"↓";opacity:1;}
+table.tbl tbody td{padding:8px 12px;border-bottom:1px solid var(--bdr);color:var(--tx);
+  vertical-align:top;max-width:430px;}
+table.tbl tbody tr:nth-child(even){background:rgba(255,255,255,.018);}
+table.tbl tbody tr:hover{background:var(--am-d);}
+table.tbl td.num{font-family:var(--mono);text-align:right;white-space:nowrap;}
+table.tbl td.muted{color:var(--tx3);text-align:center;}
+.tbl-foot{font-family:var(--mono);font-size:11px;color:var(--tx3);margin-top:9px;}
+
+/* inline cell bars + badges */
+.cellbar{display:inline-block;width:46px;height:6px;background:var(--bg);border-radius:99px;
+  overflow:hidden;vertical-align:middle;margin-right:8px;}
+.cellbar-fill{display:block;height:100%;background:linear-gradient(90deg,var(--cy),var(--am));border-radius:99px;}
+table.tbl td em{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--tx2);}
+.badge{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.03em;
+  text-transform:uppercase;padding:2px 9px;border-radius:99px;border:1px solid transparent;}
+.badge-green{background:var(--green-d);color:var(--green);border-color:rgba(52,211,153,.3);}
+.badge-am{background:var(--am-d);color:var(--am2);border-color:rgba(245,166,35,.3);}
+.badge-red{background:var(--red-d);color:var(--red);border-color:rgba(248,113,113,.3);}
+.badge-vi{background:var(--vi-d);color:var(--vi);border-color:rgba(167,139,250,.3);}
+
+.foot{margin-top:34px;padding-top:18px;border-top:1px solid var(--bdr);font-family:var(--mono);
+  font-size:11px;color:var(--tx3);letter-spacing:.04em;}
+
+/* RESPONSIVE */
+@media(max-width:920px){
+  body{flex-direction:column;}
+  .sidebar{position:static;width:100%;height:auto;flex-direction:column;border-right:none;
+    border-bottom:1px solid var(--bdr);}
+  .toc{flex-direction:row;flex-wrap:wrap;}
+  .toc-link{border-left:none;border-bottom:2px solid transparent;}
+  .toc-link.active{border-left:none;border-bottom-color:var(--am);}
+  .main{padding:24px 18px 60px;}
+  .hero h1{font-size:34px;}
+}
+"""
+
+_REPORT_JS = r"""
+(function(){
+  // Active TOC highlighting via IntersectionObserver
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc-link'));
+  var map = {};
+  links.forEach(function(l){ map[l.getAttribute('href').slice(1)] = l; });
+  var sections = links.map(function(l){ return document.getElementById(l.getAttribute('href').slice(1)); }).filter(Boolean);
+  if ('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          links.forEach(function(l){ l.classList.remove('active'); });
+          if(map[e.target.id]) map[e.target.id].classList.add('active');
+        }
+      });
+    }, {rootMargin:'-12% 0px -78% 0px', threshold:0});
+    sections.forEach(function(s){ io.observe(s); });
+  }
+
+  // Table search
+  document.querySelectorAll('.tbl-search').forEach(function(inp){
+    inp.addEventListener('input', function(){
+      var t = document.getElementById(inp.getAttribute('data-target'));
+      if(!t) return;
+      var q = inp.value.toLowerCase();
+      t.querySelectorAll('tbody tr').forEach(function(tr){
+        tr.style.display = tr.textContent.toLowerCase().indexOf(q) > -1 ? '' : 'none';
+      });
+    });
+  });
+
+  // Sortable tables
+  function cellVal(td){
+    if(!td) return '';
+    var s = td.getAttribute('data-sort');
+    if(s !== null) return parseFloat(s);
+    var txt = td.textContent.replace(/[%,\s]/g,'');
+    var n = parseFloat(txt);
+    return isNaN(n) ? td.textContent.trim().toLowerCase() : n;
+  }
+  document.querySelectorAll('table.sortable thead th').forEach(function(th, idx){
+    th.addEventListener('click', function(){
+      var table = th.closest('table');
+      var tbody = table.tBodies[0];
+      var rows = Array.prototype.slice.call(tbody.rows);
+      var asc = !th.classList.contains('sort-asc');
+      table.querySelectorAll('th').forEach(function(o){ o.classList.remove('sort-asc','sort-desc'); });
+      th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+      rows.sort(function(a,b){
+        var va = cellVal(a.cells[idx]), vb = cellVal(b.cells[idx]);
+        if(typeof va === 'number' && typeof vb === 'number') return asc ? va-vb : vb-va;
+        va = String(va); vb = String(vb);
+        return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+      });
+      rows.forEach(function(r){ tbody.appendChild(r); });
+    });
+  });
+})();
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -855,55 +1123,492 @@ class SourceComparisonResult:
             (out_path / "source_comparison_report.html").write_text(self._html_report(), encoding="utf-8")
         return str(out_path)
 
-    def _html_report(self) -> str:
-        def _table(df: pd.DataFrame, max_rows: int = 50) -> str:
-            if df.empty:
-                return "<p><em>No data.</em></p>"
-            return df.head(max_rows).to_html(classes="table", border=0, escape=False)
+    # ------------------------------------------------------------------
+    # HTML report (styled, self-contained, dependency-free)
+    # ------------------------------------------------------------------
 
-        warning_html = "".join(f"<li>{w}</li>" for w in self.warnings) or "<li>No warnings.</li>"
-        sections = [
-            ("Source Summary", self.source_summary),
-            ("Data Quality", self.data_quality),
-            ("Overlap Counts", self.overlap_counts),
-            ("Overlap Jaccard", self.overlap_jaccard),
-            ("Overlap Coverage", self.overlap_coverage),
-            ("Source Combinations", self.source_combinations),
-            ("Database Contribution Score", self.database_contribution_score),
-            ("Matching Diagnostics", self.matching_diagnostics),
-            ("Matching Confidence Report", self.matching_confidence_report),
-            ("Unique Documents", self.unique_documents),
-            ("Pairwise Matches", self.pairwise_matches),
-            ("Year Distribution", self.year_distribution),
-            ("Document Type Distribution", self.document_type_distribution),
-            ("Language Distribution", self.language_distribution),
-            ("Top Journals/Sources", self.journal_distribution),
+    def _html_report(self) -> str:
+        ss = self.source_summary
+        glob = {}
+        per_source = []
+        if isinstance(ss, pd.DataFrame) and not ss.empty and "source" in ss.columns:
+            for _, r in ss.iterrows():
+                row = {k: r[k] for k in ss.columns}
+                if str(row.get("source", "")).upper() == "GLOBAL":
+                    glob = row
+                else:
+                    per_source.append(row)
+
+        meta_chips = self._render_meta_chips()
+        kpis = self._render_kpis(glob, per_source)
+        overlap_bar = self._render_overlap_bar(glob)
+        source_cards = self._render_source_cards(per_source, glob)
+
+        # Section registry: (id, label, icon, html). Empty optional sections are dropped.
+        raw_sections = [
+            ("source-summary", "Source Summary", "▣",
+             source_cards + self._render_table(self.source_summary, table_id="t-summary")),
+            ("overlap", "Overlap Matrices", "▦", self._render_overlap_section()),
+            ("combinations", "Source Combinations", "⊞",
+             self._render_table(self.source_combinations, table_id="t-comb")),
+            ("contribution", "Database Contribution", "★",
+             self._render_contribution(self.database_contribution_score)),
+            ("matching", "Matching Diagnostics", "⊜",
+             self._render_table(self.matching_diagnostics, table_id="t-diag")),
+            ("confidence", "Matched Documents", "✓",
+             self._render_table(self.matching_confidence_report, table_id="t-conf", searchable=True)),
+            ("unique", "Source-Exclusive Documents", "◈",
+             self._render_table(self.unique_documents, table_id="t-uniq", searchable=True)),
+            ("quality", "Field Coverage / Data Quality", "❏",
+             self._render_table(self.data_quality, table_id="t-dq", searchable=True)),
+            ("years", "Year Distribution", "◷",
+             self._render_table(self.year_distribution, table_id="t-year")),
+            ("doctypes", "Document Types", "❑",
+             self._render_table(self.document_type_distribution, table_id="t-dt")),
+            ("languages", "Languages", "✦",
+             self._render_table(self.language_distribution, table_id="t-lang")),
+            ("journals", "Top Journals / Sources", "❧",
+             self._render_table(self.journal_distribution, table_id="t-jrn", searchable=True)),
         ]
-        body = "\n".join(f"<h2>{title}</h2>{_table(df)}" for title, df in sections)
-        return f"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>pybibx Source Comparison Report</title>
-<style>
-body {{ font-family: Arial, sans-serif; margin: 32px; color: #222; }}
-h1 {{ margin-bottom: 0; }}
-.subtitle {{ color: #555; margin-top: 6px; }}
-.table {{ border-collapse: collapse; width: 100%; margin-bottom: 28px; font-size: 13px; }}
-.table th, .table td {{ border: 1px solid #ddd; padding: 6px 8px; vertical-align: top; }}
-.table th {{ background: #f2f2f2; }}
-code {{ background: #f7f7f7; padding: 2px 4px; }}
-</style>
-</head>
-<body>
-<h1>pybibx Source Comparison Report</h1>
-<p class="subtitle">Generated by <code>pybibx.compare_sources</code>.</p>
-<h2>Warnings</h2><ul>{warning_html}</ul>
-{body}
-</body>
-</html>
-"""
+
+        toc_links = []
+        sections_html = []
+        for sid, label, icon, html_body in raw_sections:
+            toc_links.append(
+                f'<a class="toc-link" href="#{sid}"><span class="toc-ico">{icon}</span>{self._esc(label)}</a>'
+            )
+            sections_html.append(
+                f'<section class="card" id="{sid}">'
+                f'<div class="card-head"><span class="card-ico">{icon}</span>'
+                f'<h2>{self._esc(label)}</h2></div>'
+                f'<div class="card-body">{html_body}</div></section>'
+            )
+
+        warnings_html = self._render_warnings()
+        gen_time = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+        sources_loaded = ", ".join(
+            str(s).upper() for s in self.parameters.get("loaded_sources", [])
+        ) or "—"
+
+        parts = []
+        parts.append("<!doctype html>")
+        parts.append('<html lang="en"><head>')
+        parts.append('<meta charset="utf-8"/>')
+        parts.append('<meta name="viewport" content="width=device-width,initial-scale=1"/>')
+        parts.append("<title>PyBibX · Source Comparison Report</title>")
+        parts.append(
+            '<link rel="preconnect" href="https://fonts.googleapis.com"/>'
+            '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>'
+            '<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1'
+            '&family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500'
+            '&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>'
+        )
+        parts.append("<style>" + _REPORT_CSS + "</style>")
+        parts.append("</head><body>")
+
+        # Sidebar / table of contents
+        parts.append('<aside class="sidebar">')
+        parts.append(
+            '<div class="brand"><div class="brand-mark">Py<span>BibX</span></div>'
+            '<div class="brand-sub">Source Comparison</div></div>'
+        )
+        parts.append('<nav class="toc">' + "".join(toc_links) + "</nav>")
+        parts.append(
+            '<div class="sidebar-foot">Generated ' + self._esc(gen_time) + "</div>"
+        )
+        parts.append("</aside>")
+
+        # Main column
+        parts.append('<main class="main">')
+        parts.append('<header class="hero">')
+        parts.append('<div class="hero-eyebrow">Bibliometric Coverage Audit</div>')
+        parts.append("<h1>Source Comparison Report</h1>")
+        parts.append(
+            '<p class="hero-lead">Cross-database overlap, deduplication and metadata-quality '
+            "audit produced by <code>pybibx.compare_sources</code>.</p>"
+        )
+        parts.append('<div class="chips">' + meta_chips + "</div>")
+        parts.append("</header>")
+
+        parts.append(warnings_html)
+        parts.append('<section class="kpi-grid">' + kpis + "</section>")
+        if overlap_bar:
+            parts.append(overlap_bar)
+        parts.extend(sections_html)
+
+        parts.append(
+            '<footer class="foot">PyBibX · <code>compare_sources</code> · '
+            + self._esc(sources_loaded)
+            + " · " + self._esc(gen_time) + "</footer>"
+        )
+        parts.append("</main>")
+        parts.append("<script>" + _REPORT_JS + "</script>")
+        parts.append("</body></html>")
+        return "\n".join(parts)
+
+    # ---- small rendering helpers -------------------------------------
+
+    @staticmethod
+    def _esc(value: Any) -> str:
+        return _html.escape("" if value is None else str(value))
+
+    @staticmethod
+    def _is_blank(value: Any) -> bool:
+        if value is None:
+            return True
+        try:
+            if isinstance(value, float) and math.isnan(value):
+                return True
+        except Exception:
+            pass
+        return str(value).strip() == ""
+
+    @staticmethod
+    def _ratio_col(name: str) -> bool:
+        n = str(name).lower()
+        return any(k in n for k in (
+            "coverage", "share", "jaccard", "redundancy_rate", "_rate",
+            "bonus", "probability",
+        ))
+
+    def _render_meta_chips(self) -> str:
+        p = self.parameters or {}
+        loaded = [str(s).upper() for s in p.get("loaded_sources", [])]
+        chips = []
+        chips.append(self._chip("Sources", " · ".join(loaded) or "—", "cy"))
+        if "min_title_similarity" in p:
+            chips.append(self._chip("Title similarity ≥", f"{p['min_title_similarity']:.2f}", "am"))
+        if "year_window" in p:
+            chips.append(self._chip("Year window", f"±{p['year_window']}", "am"))
+        if "deduplicate_within_source" in p:
+            chips.append(self._chip(
+                "Intra-source dedup",
+                "on" if p["deduplicate_within_source"] else "off", "vi"))
+        return "".join(chips)
+
+    def _chip(self, label: str, value: str, tone: str = "am") -> str:
+        return (
+            f'<span class="chip chip-{tone}"><span class="chip-k">{self._esc(label)}</span>'
+            f'<span class="chip-v">{self._esc(value)}</span></span>'
+        )
+
+    def _kpi(self, value: str, label: str, sub: str = "", tone: str = "am") -> str:
+        sub_html = f'<div class="kpi-sub">{self._esc(sub)}</div>' if sub else ""
+        return (
+            f'<div class="kpi kpi-{tone}"><div class="kpi-val">{self._esc(value)}</div>'
+            f'<div class="kpi-lbl">{self._esc(label)}</div>{sub_html}</div>'
+        )
+
+    @staticmethod
+    def _fmt_int(value: Any) -> str:
+        try:
+            return f"{int(round(float(value))):,}"
+        except Exception:
+            return str(value)
+
+    @staticmethod
+    def _fmt_pct(value: Any, decimals: int = 1) -> str:
+        try:
+            return f"{float(value) * 100:.{decimals}f}%"
+        except Exception:
+            return str(value)
+
+    def _render_kpis(self, glob: Mapping[str, Any], per_source: Sequence[Mapping[str, Any]]) -> str:
+        n_sources = len(per_source) if per_source else len(self.parameters.get("loaded_sources", []))
+        cards = []
+        cards.append(self._kpi(self._fmt_int(n_sources), "Databases compared", "deduplicated & matched", "cy"))
+        if glob:
+            records = glob.get("records_loaded", 0)
+            uniq = glob.get("unique_documents_after_matching", 0)
+            shared = glob.get("documents_shared_with_any_other_source", 0)
+            exclusive = glob.get("documents_unique_to_source", 0)
+            try:
+                consolidated = int(records) - int(uniq)
+                dedup_rate = (consolidated / int(records)) if int(records) else 0.0
+            except Exception:
+                consolidated, dedup_rate = 0, 0.0
+            try:
+                shared_pct = (int(shared) / int(uniq)) if int(uniq) else 0.0
+            except Exception:
+                shared_pct = 0.0
+            cards.append(self._kpi(self._fmt_int(records), "Records loaded", "raw entries across sources", "am"))
+            cards.append(self._kpi(self._fmt_int(uniq), "Unique documents", "after cross-source matching", "am"))
+            cards.append(self._kpi(self._fmt_int(shared), "Shared documents",
+                                   self._fmt_pct(shared_pct) + " of unique", "vi"))
+            cards.append(self._kpi(self._fmt_int(exclusive), "Source-exclusive",
+                                   "found in a single database", "green"))
+            cards.append(self._kpi(self._fmt_int(consolidated), "Records consolidated",
+                                   self._fmt_pct(dedup_rate) + " redundancy", "red"))
+            if "doi_coverage" in glob:
+                cards.append(self._kpi(self._fmt_pct(glob.get("doi_coverage", 0)),
+                                       "DOI coverage", "global, all records", "cy"))
+        return "".join(cards)
+
+    def _render_overlap_bar(self, glob: Mapping[str, Any]) -> str:
+        if not glob:
+            return ""
+        try:
+            shared = int(glob.get("documents_shared_with_any_other_source", 0))
+            exclusive = int(glob.get("documents_unique_to_source", 0))
+        except Exception:
+            return ""
+        total = shared + exclusive
+        if total <= 0:
+            return ""
+        ex_pct = exclusive / total * 100
+        sh_pct = shared / total * 100
+        return (
+            '<section class="card"><div class="card-head"><span class="card-ico">◑</span>'
+            '<h2>Coverage Composition</h2></div><div class="card-body">'
+            '<div class="stackbar">'
+            f'<div class="seg seg-exclusive" style="width:{ex_pct:.3f}%" '
+            f'title="Source-exclusive: {exclusive}"></div>'
+            f'<div class="seg seg-shared" style="width:{sh_pct:.3f}%" '
+            f'title="Shared: {shared}"></div></div>'
+            '<div class="stackbar-legend">'
+            f'<span><i class="dot dot-exclusive"></i>Source-exclusive · '
+            f'{self._fmt_int(exclusive)} ({ex_pct:.1f}%)</span>'
+            f'<span><i class="dot dot-shared"></i>Shared across sources · '
+            f'{self._fmt_int(shared)} ({sh_pct:.1f}%)</span>'
+            "</div></div></section>"
+        )
+
+    def _render_warnings(self) -> str:
+        if not self.warnings:
+            return ""
+        items = "".join(f"<li>{self._esc(w)}</li>" for w in self.warnings)
+        return (
+            '<div class="banner banner-warn"><span class="banner-ico">⚠</span>'
+            f'<div><strong>{len(self.warnings)} warning(s)</strong><ul>{items}</ul></div></div>'
+        )
+
+    def _render_source_cards(self, per_source: Sequence[Mapping[str, Any]], glob: Mapping[str, Any]) -> str:
+        if not per_source:
+            return ""
+        cov_fields = [
+            ("doi_coverage", "DOI"), ("title_coverage", "Title"),
+            ("abstract_coverage", "Abstract"), ("reference_coverage", "Refs"),
+            ("author_coverage", "Author"), ("journal_coverage", "Journal"),
+            ("year_coverage", "Year"),
+        ]
+        cards = []
+        for row in per_source:
+            name = str(row.get("source", "")).upper()
+            loaded = self._fmt_int(row.get("records_loaded", 0))
+            uniq = self._fmt_int(row.get("unique_documents_after_matching", 0))
+            excl = self._fmt_int(row.get("documents_unique_to_source", 0))
+            shr = row.get("share_of_global_unique_documents", 0)
+            try:
+                shr_pct = float(shr) * 100
+            except Exception:
+                shr_pct = 0.0
+            bars = []
+            for key, lbl in cov_fields:
+                if key not in row:
+                    continue
+                try:
+                    v = float(row[key])
+                except Exception:
+                    continue
+                bars.append(
+                    '<div class="cov-row"><span class="cov-lbl">' + self._esc(lbl) + "</span>"
+                    '<span class="cov-track"><span class="cov-fill" style="width:'
+                    + f"{v * 100:.1f}%" + '"></span></span>'
+                    '<span class="cov-num">' + f"{v * 100:.0f}%" + "</span></div>"
+                )
+            cards.append(
+                '<div class="src-card">'
+                f'<div class="src-card-head"><span class="src-name">{self._esc(name)}</span>'
+                f'<span class="src-share">{shr_pct:.1f}% of corpus</span></div>'
+                '<div class="src-stats">'
+                f'<div><b>{loaded}</b><small>records</small></div>'
+                f'<div><b>{uniq}</b><small>unique</small></div>'
+                f'<div><b>{excl}</b><small>exclusive</small></div></div>'
+                '<div class="cov-block">' + "".join(bars) + "</div>"
+                "</div>"
+            )
+        return '<div class="src-grid">' + "".join(cards) + "</div>"
+
+    def _render_overlap_section(self) -> str:
+        blocks = [
+            ("Shared documents", self.overlap_counts, "counts", "am"),
+            ("Jaccard index", self.overlap_jaccard, "ratio", "cy"),
+            ("Row coverage", self.overlap_coverage, "ratio", "vi"),
+        ]
+        out = ['<p class="hint">Diagonal cells show each source\'s own unique-document count; '
+               "off-diagonal cells quantify pairwise overlap.</p>"]
+        out.append('<div class="matrix-grid">')
+        for title, df, kind, tone in blocks:
+            out.append(self._render_matrix(title, df, kind, tone))
+        out.append("</div>")
+        return "".join(out)
+
+    def _render_matrix(self, title: str, df: pd.DataFrame, kind: str, tone: str) -> str:
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return (
+                '<div class="matrix-wrap"><div class="matrix-title">' + self._esc(title)
+                + '</div><p class="muted">No data.</p></div>'
+            )
+        cols = list(df.columns)
+        try:
+            vals = df.astype(float).values
+            vmax = float(vals.max()) if vals.size else 0.0
+        except Exception:
+            vals = df.values
+            vmax = 0.0
+        rgb = {"am": "245,166,35", "cy": "61,227,200", "vi": "167,139,250"}.get(tone, "245,166,35")
+
+        head = "<th></th>" + "".join(f"<th>{self._esc(str(c)).upper()}</th>" for c in cols)
+        body_rows = []
+        for i, idx in enumerate(df.index):
+            tds = [f'<th class="rowhead">{self._esc(str(idx)).upper()}</th>']
+            for j, c in enumerate(cols):
+                raw = df.iloc[i, j]
+                try:
+                    fv = float(raw)
+                except Exception:
+                    fv = 0.0
+                if kind == "ratio":
+                    disp = f"{fv:.2f}"
+                    alpha = max(0.0, min(1.0, fv))
+                else:
+                    disp = self._fmt_int(raw)
+                    alpha = (fv / vmax) if vmax else 0.0
+                alpha = 0.06 + 0.84 * alpha
+                diag = " diag" if str(idx) == str(c) else ""
+                tds.append(
+                    f'<td class="hcell{diag}" style="background:rgba({rgb},{alpha:.3f})">'
+                    f"{disp}</td>"
+                )
+            body_rows.append("<tr>" + "".join(tds) + "</tr>")
+        return (
+            '<div class="matrix-wrap"><div class="matrix-title">' + self._esc(title) + "</div>"
+            '<table class="matrix"><thead><tr>' + head + "</tr></thead><tbody>"
+            + "".join(body_rows) + "</tbody></table></div>"
+        )
+
+    def _render_contribution(self, df: pd.DataFrame) -> str:
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return '<p class="muted">No data.</p>'
+        bars = []
+        if "contribution_score_0_100" in df.columns and "source" in df.columns:
+            for _, r in df.iterrows():
+                try:
+                    score = float(r["contribution_score_0_100"])
+                except Exception:
+                    score = 0.0
+                name = self._esc(str(r["source"]).upper())
+                bars.append(
+                    '<div class="score-row"><span class="score-name">' + name + "</span>"
+                    '<span class="score-track"><span class="score-fill" style="width:'
+                    + f"{max(0.0, min(100.0, score)):.1f}%" + '"></span></span>'
+                    '<span class="score-num">' + f"{score:.1f}" + "</span></div>"
+                )
+        return (
+            '<div class="score-block">' + "".join(bars) + "</div>"
+            + self._render_table(df, table_id="t-contrib")
+        )
+
+    def _render_table(self, df: pd.DataFrame, table_id: str = "", max_rows: int = 60,
+                      searchable: bool = False) -> str:
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return '<p class="muted">No data available.</p>'
+
+        cols = list(df.columns)
+        total = len(df)
+        view = df.head(max_rows)
+        hidden = total - len(view)
+
+        # header
+        ths = []
+        for c in cols:
+            sample = df[c].dropna().head(20).tolist()
+            numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in sample) and len(sample) > 0
+            dtype = "num" if numeric else "text"
+            ths.append(f'<th data-type="{dtype}">{self._esc(str(c))}</th>')
+        thead = "<tr>" + "".join(ths) + "</tr>"
+
+        rows_html = []
+        for _, r in view.iterrows():
+            tds = []
+            for c in cols:
+                tds.append(self._fmt_cell(c, r[c]))
+            rows_html.append("<tr>" + "".join(tds) + "</tr>")
+
+        tools = []
+        if searchable:
+            tools.append(
+                f'<input class="tbl-search" data-target="{table_id}" type="text" '
+                'placeholder="Filter rows…"/>'
+            )
+        tools.append(f'<span class="tbl-meta">{total:,} row(s)</span>')
+        tools_html = '<div class="tbl-tools">' + "".join(tools) + "</div>"
+
+        footer = ""
+        if hidden > 0:
+            footer = f'<div class="tbl-foot">Showing first {len(view):,} of {total:,} rows.</div>'
+
+        return (
+            tools_html
+            + '<div class="tbl-scroll"><table class="tbl sortable" id="' + self._esc(table_id) + '">'
+            + "<thead>" + thead + "</thead><tbody>" + "".join(rows_html) + "</tbody></table></div>"
+            + footer
+        )
+
+    def _fmt_cell(self, col: str, value: Any) -> str:
+        name = str(col).lower()
+        if self._is_blank(value):
+            return '<td class="muted">—</td>'
+
+        if name == "confidence_label" or name.endswith("confidence_label"):
+            lab = str(value).strip().lower()
+            tone = {"high": "green", "medium": "am", "moderate": "am",
+                    "low": "red", "very low": "red"}.get(lab, "vi")
+            return f'<td><span class="badge badge-{tone}">{self._esc(value)}</span></td>'
+
+        if name == "contribution_score_0_100":
+            try:
+                v = float(value)
+            except Exception:
+                return f'<td class="num">{self._esc(value)}</td>'
+            return (
+                '<td class="num"><span class="cellbar"><span class="cellbar-fill" '
+                f'style="width:{max(0.0, min(100.0, v)):.1f}%"></span></span>'
+                f'<em>{v:.1f}</em></td>'
+            )
+
+        if self._ratio_col(name):
+            try:
+                v = float(value)
+            except Exception:
+                return f'<td>{self._esc(value)}</td>'
+            pct = max(0.0, min(1.0, v)) * 100
+            return (
+                '<td class="num" data-sort="' + f"{v:.6f}" + '">'
+                '<span class="cellbar"><span class="cellbar-fill" '
+                f'style="width:{pct:.1f}%"></span></span>'
+                f'<em>{v * 100:.1f}%</em></td>'
+            )
+
+        if isinstance(value, bool):
+            return f'<td>{"yes" if value else "no"}</td>'
+
+        if isinstance(value, (int,)) and not isinstance(value, bool):
+            return f'<td class="num" data-sort="{value}">{self._fmt_int(value)}</td>'
+
+        if isinstance(value, float):
+            if math.isnan(value):
+                return '<td class="muted">—</td>'
+            if abs(value - round(value)) < 1e-9 and abs(value) >= 1:
+                return f'<td class="num" data-sort="{value}">{self._fmt_int(value)}</td>'
+            return f'<td class="num" data-sort="{value}">{value:.3f}</td>'
+
+        text = str(value)
+        if len(text) > 220:
+            short = self._esc(text[:200])
+            full = self._esc(text)
+            return f'<td title="{full}">{short}…</td>'
+        return f"<td>{self._esc(text)}</td>"
 
     def plot_overlap_heatmap(self, path: Union[str, os.PathLike[str]] = "overlap_heatmap.png", metric: str = "jaccard") -> str:
         """Save a heatmap for the overlap matrix.
